@@ -44,12 +44,19 @@ jobs:
           cd /tmp/dl
 
           echo "🚀 Processing URL: $URL"
-          # استفاده از کلاینت TV برای دور زدن محدودیت‌های یوتیوب
           YTDLP_ARGS="--force-ipv4 --geo-bypass --extractor-args youtube:player_client=tv,web --no-playlist -o %(title).50s.%(ext)s"
 
           if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
             echo "📸 Using gallery-dl for Instagram..."
             gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_ARGS "$URL"
+          elif echo "$URL" | grep -qiE "soundcloud\.com"; then
+            echo "🎵 Using yt-dlp for SoundCloud..."
+            case "$QUALITY" in
+              "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true ;;
+              "320") yt-dlp -x --audio-format mp3 --audio-quality 320K $YTDLP_ARGS "$URL" || true ;;
+              "128") yt-dlp -x --audio-format mp3 --audio-quality 128K $YTDLP_ARGS "$URL" || true ;;
+              *) yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true ;;
+            esac
           else
             echo "🎥 Using yt-dlp..."
             case "$QUALITY" in
@@ -88,17 +95,17 @@ jobs:
             FILE_NAME="${{ steps.dl.outputs.file_name }}"
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
 
-            if [ $FILE_SIZE -gt 52428800 ]; then
+            if [ $FILE_SIZE -gt 2097152000 ]; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
                 -d "chat_id=${CHAT_ID}" \
                 -d "message_id=${MSG_ID}" \
-                -d "text=⚠️ متأسفانه حجم فایل بیش از ۵۰ مگابایت است (محدودیت آپلود تلگرام)."
+                -d "text=⚠️ File size exceeds 2GB limit."
               exit 0
             fi
 
             EXT="${FILE_NAME##*.}"
             EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
-            CAPTION="✅ <b>دانلود با موفقیت انجام شد</b>\n📁 <code>${FILE_NAME}</code>\n\n🤖 @YoutubeDLLBot"
+            CAPTION="✅ <b>Download completed successfully</b>\n📁 <code>${FILE_NAME}</code>\n\n🤖 @YoutubeDLLBot"
 
             case "$EXT_LOWER" in
               mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio"; FIELD="audio" ;;
@@ -120,7 +127,7 @@ jobs:
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
               
               if [ -n "$LOG_CHANNEL" ]; then
-                LOG_CAP="📋 <b>لاگ دانلود</b>\n👤 آیدی: <code>${CHAT_ID}</code>\n🔗 لینک: ${{ github.event.inputs.url }}"
+                LOG_CAP="📋 <b>Download Log</b>\n👤 ID: <code>${CHAT_ID}</code>\n🔗 Link: ${{ github.event.inputs.url }}"
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
                   -F "chat_id=${LOG_CHANNEL}" \
                   -F "${FIELD}=@${FILE_PATH}" \
@@ -132,11 +139,11 @@ jobs:
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
                 -d "chat_id=${CHAT_ID}" \
                 -d "message_id=${MSG_ID}" \
-                -d "text=❌ خطا در آپلود به تلگرام. ارتباط برقرار نشد."
+                -d "text=❌ Error uploading to Telegram."
             fi
           else
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
               -d "chat_id=${CHAT_ID}" \
               -d "message_id=${MSG_ID}" \
-              -d "text=❌ دانلود فایل ناموفق بود.\nممکن است لینک خصوصی، مسدود شده یا نامعتبر باشد."
+              -d "text=❌ Download failed. The link may be private or invalid."
           fi
