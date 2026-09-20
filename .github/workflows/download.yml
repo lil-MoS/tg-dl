@@ -25,17 +25,31 @@ on:
 jobs:
   process_media:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Setup Environment
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl nodejs npm
+          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip
           python3 -m pip install -U pip
           python3 -m pip install -U --pre yt-dlp gallery-dl
-          # نصب POT Provider برای دور زدن تشخیص ربات یوتیوب
-          npm install -g bgutil-ytdlp-pot-provider || true
+          # نصب POT Provider (پایتون + نود)
           python3 -m pip install -U bgutil-ytdlp-pot-provider || true
+          npm install -g bgutil-ytdlp-pot-provider || true
+
+      - name: Start POT Server
+        run: |
+          # راه‌اندازی سرور POT برای دور زدن تشخیص ربات یوتیوب
+          if [ -d "$(npm root -g)/bgutil-ytdlp-pot-provider/server" ]; then
+            cd "$(npm root -g)/bgutil-ytdlp-pot-provider/server"
+            npm install --no-audit --no-fund || true
+            npx tsc || true
+            nohup node build/main.js > /tmp/pot.log 2>&1 &
+            sleep 4
+            echo "POT server started"
+          else
+            echo "POT server not found, continuing without it"
+          fi
 
       - name: Download Content
         id: dl
@@ -46,25 +60,26 @@ jobs:
           cd /tmp/dl
 
           echo "🚀 Processing URL: $URL"
-          # استفاده از کلاینت TV و فعال‌سازی POT Provider برای دور زدن بلاک یوتیوب
-          YTDLP_ARGS="--force-ipv4 --geo-bypass --no-playlist -o %(title).50s.%(ext)s"
-          YTDLP_ARGS="$YTDLP_ARGS --extractor-args youtube:player_client=tv,web"
-          YTDLP_ARGS="$YTDLP_ARGS --extractor-args youtubetab:skip=authcheck"
+
+          # آرگومان‌های مشترک yt-dlp
+          YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
+          YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
+          YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
 
           if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
-            echo "📸 Using gallery-dl for Instagram..."
-            gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_ARGS "$URL"
+            echo "📸 Instagram..."
+            gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL"
           elif echo "$URL" | grep -qiE "soundcloud\.com"; then
-            echo "🎵 Using yt-dlp for SoundCloud..."
-            yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true
+            echo "🎵 SoundCloud..."
+            yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
           else
-            echo "🎥 Using yt-dlp..."
+            echo "🎥 General download..."
             case "$QUALITY" in
-              "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true ;;
-              "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
-              "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
-              "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
-              *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
+              "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
+              "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+              "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+              "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+              *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
             esac
           fi
 
@@ -104,11 +119,11 @@ jobs:
 
             EXT="${FILE_NAME##*.}"
             EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
-            CAPTION="✅ <b>Download completed successfully</b>\n📁 <code>${FILE_NAME}</code>\n\n🤖 @YoutubeDLLBot"
+            CAPTION="✅ <b>Download completed successfully</b>%0A📁 <code>${FILE_NAME}</code>%0A%0A🤖 @YoutubeDLLBot"
 
             case "$EXT_LOWER" in
-              mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio";  FIELD="audio" ;;
-              mp4|mkv|webm|mov|avi)     METHOD="sendVideo";  FIELD="video" ;;
+              mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio";    FIELD="audio" ;;
+              mp4|mkv|webm|mov|avi)     METHOD="sendVideo";    FIELD="video" ;;
               *)                        METHOD="sendDocument"; FIELD="document" ;;
             esac
 
@@ -121,7 +136,7 @@ jobs:
             if echo "$BODY" | grep -q '"ok":true'; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
               if [ -n "$LOG_CHANNEL" ]; then
-                LOG_CAP="📋 <b>Download Log</b>\n👤 ID: <code>${CHAT_ID}</code>\n🔗 Link: ${{ github.event.inputs.url }}"
+                LOG_CAP="📋 <b>Download Log</b>%0A👤 ID: <code>${CHAT_ID}</code>%0A🔗 Link: ${{ github.event.inputs.url }}"
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
                   -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" \
                   -F "caption=${LOG_CAP}" -F "parse_mode=HTML"
