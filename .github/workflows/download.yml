@@ -27,53 +27,82 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Security Check
+        id: sec
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          echo "Checking URL: $URL"
+
+          if ! echo "$URL" | grep -qiE "^https?://"; then
+            echo "safe=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if echo "$URL" | grep -qiE "^(file|gopher|ftp|ftps|sftp|ssh|telnet|data|phar|expect|dict|ldap):"; then
+            echo "safe=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          HOST=$(echo "$URL" | sed -E "s#^https?://##; s#^[^/]*@##; s#[/:?].*##")
+          HOST_LOWER=$(echo "$HOST" | tr "[:upper:]" "[:lower:]")
+          for BAD in localhost localhost.localdomain 0.0.0.0 ::1 127.0.0.1 127.1 169.254.169.254; do
+            if [ "$HOST_LOWER" = "$BAD" ]; then
+              echo "safe=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+          if echo "$HOST_LOWER" | grep -qE "^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)"; then
+            echo "safe=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if echo "$URL" | grep -qiE "\.(sh|bash|zsh|php[0-9]?|phtml|phar|exe|bat|cmd|com|scr|msi|vbs|vbe|jse|wsf|wsh|ps1|psm1|py|pyc|pl|pm|rb|cgi|jar|class|dll|so|elf|bin|deb|rpm|asp|aspx|jsp|war|ear)($|\?|#)"; then
+            echo "safe=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "safe=true" >> $GITHUB_OUTPUT
+
       - name: Setup Environment
+        if: steps.sec.outputs.safe == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip
+          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file
           python3 -m pip install -U pip
           python3 -m pip install -U --pre yt-dlp gallery-dl
-          # نصب POT Provider (پایتون + نود)
           python3 -m pip install -U bgutil-ytdlp-pot-provider || true
           npm install -g bgutil-ytdlp-pot-provider || true
 
       - name: Start POT Server
+        if: steps.sec.outputs.safe == 'true'
         run: |
-          # راه‌اندازی سرور POT برای دور زدن تشخیص ربات یوتیوب
           if [ -d "$(npm root -g)/bgutil-ytdlp-pot-provider/server" ]; then
             cd "$(npm root -g)/bgutil-ytdlp-pot-provider/server"
             npm install --no-audit --no-fund || true
             npx tsc || true
             nohup node build/main.js > /tmp/pot.log 2>&1 &
             sleep 4
-            echo "POT server started"
-          else
-            echo "POT server not found, continuing without it"
           fi
 
       - name: Download Content
         id: dl
+        if: steps.sec.outputs.safe == 'true'
         run: |
           URL="${{ github.event.inputs.url }}"
           QUALITY="${{ github.event.inputs.quality }}"
           mkdir -p /tmp/dl
           cd /tmp/dl
 
-          echo "🚀 Processing URL: $URL"
-
-          # آرگومان‌های مشترک yt-dlp
+          echo "Processing URL: $URL"
           YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
           YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
           YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
 
           if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
-            echo "📸 Instagram..."
             gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL"
           elif echo "$URL" | grep -qiE "soundcloud\.com"; then
-            echo "🎵 SoundCloud..."
             yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
           else
-            echo "🎥 General download..."
             case "$QUALITY" in
               "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
               "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
@@ -83,27 +112,74 @@ jobs:
             esac
           fi
 
-          echo "🔍 Scanning for final file..."
           FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
 
           if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
-            FILE_NAME=$(basename "$FILE_PATH")
-            echo "✅ File saved: $FILE_NAME"
+            MIME=$(file --mime-type -b "$FILE_PATH")
+            echo "Detected MIME: $MIME"
+
+            case "$MIME" in
+              video/mp4|video/x-m4v)   EXT="mp4" ;;
+              video/x-matroska)        EXT="mkv" ;;
+              video/webm)              EXT="webm" ;;
+              video/quicktime)         EXT="mov" ;;
+              video/x-msvideo)         EXT="avi" ;;
+              audio/mpeg)              EXT="mp3" ;;
+              audio/mp4)               EXT="m4a" ;;
+              audio/ogg)               EXT="ogg" ;;
+              audio/flac|audio/x-flac) EXT="flac" ;;
+              audio/wav|audio/x-wav)   EXT="wav" ;;
+              audio/aac)               EXT="aac" ;;
+              image/jpeg)              EXT="jpg" ;;
+              image/png)               EXT="png" ;;
+              image/gif)               EXT="gif" ;;
+              image/webp)              EXT="webp" ;;
+              *)                       EXT="" ;;
+            esac
+
+            case "$EXT" in
+              sh|bash|zsh|php|phtml|phar|exe|bat|cmd|com|scr|msi|vbs|jse|wsf|wsh|ps1|py|pyc|pl|pm|rb|cgi|jar|class|dll|so|elf|bin|deb|rpm|asp|aspx|jsp|war|ear)
+                echo "status=blocked" >> $GITHUB_OUTPUT
+                exit 0
+                ;;
+            esac
+
+            FILE_DIR=$(dirname "$FILE_PATH")
+            FILE_BASE=$(basename "$FILE_PATH")
+            NAME_NO_EXT="${FILE_BASE%.*}"
+            if [ -n "$EXT" ]; then
+              NEW_NAME="${NAME_NO_EXT}.${EXT}"
+            else
+              NEW_NAME="${FILE_BASE}"
+            fi
+            NEW_PATH="${FILE_DIR}/${NEW_NAME}"
+            if [ "$NEW_PATH" != "$FILE_PATH" ]; then
+              mv "$FILE_PATH" "$NEW_PATH"
+              FILE_PATH="$NEW_PATH"
+            fi
+
             echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
-            echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+            echo "file_name=$(basename "$FILE_PATH")" >> $GITHUB_OUTPUT
+            echo "file_mime=$MIME" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ Download failed."
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
       - name: Telegram Upload
+        if: steps.sec.outputs.safe == 'true'
         run: |
           BOT_TOKEN="${{ github.event.inputs.bot_token }}"
           CHAT_ID="${{ github.event.inputs.chat_id }}"
           LOG_CHANNEL="${{ github.event.inputs.log_channel }}"
           MSG_ID="${{ github.event.inputs.message_id }}"
           STATUS="${{ steps.dl.outputs.status }}"
+          MIME="${{ steps.dl.outputs.file_mime }}"
+
+          if [ "$STATUS" = "blocked" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Blocked for security reasons."
+            exit 0
+          fi
 
           if [ "$STATUS" = "success" ]; then
             FILE_PATH="${{ steps.dl.outputs.file_path }}"
@@ -111,43 +187,31 @@ jobs:
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
 
             if [ $FILE_SIZE -gt 2097152000 ]; then
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-                -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
-                -d "text=⚠️ File size exceeds 2GB limit."
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=File exceeds 2GB limit."
               exit 0
             fi
 
-            EXT="${FILE_NAME##*.}"
-            EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
-            CAPTION="✅ <b>Download completed successfully</b>%0A📁 <code>${FILE_NAME}</code>%0A%0A🤖 @YoutubeDLLBot"
+            CAPTION="Download completed: ${FILE_NAME} | @YoutubeDLLBot"
 
-            case "$EXT_LOWER" in
-              mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio";    FIELD="audio" ;;
-              mp4|mkv|webm|mov|avi)     METHOD="sendVideo";    FIELD="video" ;;
-              *)                        METHOD="sendDocument"; FIELD="document" ;;
+            case "$MIME" in
+              video/*) METHOD="sendVideo";    FIELD="video" ;;
+              audio/*) METHOD="sendAudio";    FIELD="audio" ;;
+              image/*) METHOD="sendPhoto";    FIELD="photo" ;;
+              *)       METHOD="sendDocument"; FIELD="document" ;;
             esac
 
-            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
-              -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" \
-              -F "caption=${CAPTION}" -F "parse_mode=HTML")
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" -F "caption=${CAPTION}")
 
             BODY=$(echo "$RESPONSE" | sed '$d')
 
             if echo "$BODY" | grep -q '"ok":true'; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
               if [ -n "$LOG_CHANNEL" ]; then
-                LOG_CAP="📋 <b>Download Log</b>%0A👤 ID: <code>${CHAT_ID}</code>%0A🔗 Link: ${{ github.event.inputs.url }}"
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
-                  -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" \
-                  -F "caption=${LOG_CAP}" -F "parse_mode=HTML"
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" -F "caption=Log from ${CHAT_ID}"
               fi
             else
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-                -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
-                -d "text=❌ Error uploading to Telegram."
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Upload error."
             fi
           else
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-              -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
-              -d "text=❌ Download failed. The link may be private or invalid."
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Download failed."
           fi
