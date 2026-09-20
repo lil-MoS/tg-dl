@@ -30,10 +30,12 @@ jobs:
       - name: Setup Environment
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl
+          sudo apt-get install -y -qq ffmpeg curl nodejs npm
           python3 -m pip install -U pip
           python3 -m pip install -U --pre yt-dlp gallery-dl
-          python3 -m pip install -U bgutil-ytdlp-pot-provider
+          # نصب POT Provider برای دور زدن تشخیص ربات یوتیوب
+          npm install -g bgutil-ytdlp-pot-provider || true
+          python3 -m pip install -U bgutil-ytdlp-pot-provider || true
 
       - name: Download Content
         id: dl
@@ -44,41 +46,39 @@ jobs:
           cd /tmp/dl
 
           echo "🚀 Processing URL: $URL"
-          YTDLP_ARGS="--force-ipv4 --geo-bypass --extractor-args youtube:player_client=tv,web --no-playlist -o %(title).50s.%(ext)s"
+          # استفاده از کلاینت TV و فعال‌سازی POT Provider برای دور زدن بلاک یوتیوب
+          YTDLP_ARGS="--force-ipv4 --geo-bypass --no-playlist -o %(title).50s.%(ext)s"
+          YTDLP_ARGS="$YTDLP_ARGS --extractor-args youtube:player_client=tv,web"
+          YTDLP_ARGS="$YTDLP_ARGS --extractor-args youtubetab:skip=authcheck"
 
           if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
             echo "📸 Using gallery-dl for Instagram..."
             gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_ARGS "$URL"
           elif echo "$URL" | grep -qiE "soundcloud\.com"; then
             echo "🎵 Using yt-dlp for SoundCloud..."
-            case "$QUALITY" in
-              "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true ;;
-              "320") yt-dlp -x --audio-format mp3 --audio-quality 320K $YTDLP_ARGS "$URL" || true ;;
-              "128") yt-dlp -x --audio-format mp3 --audio-quality 128K $YTDLP_ARGS "$URL" || true ;;
-              *) yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true ;;
-            esac
+            yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true
           else
             echo "🎥 Using yt-dlp..."
             case "$QUALITY" in
               "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true ;;
-              "720") yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
-              "480") yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
-              "360") yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
-              *) yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
+              "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
+              "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
+              "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
+              *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true ;;
             esac
           fi
 
           echo "🔍 Scanning for final file..."
           FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
-          
+
           if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
             FILE_NAME=$(basename "$FILE_PATH")
-            echo "✅ File successfully saved: $FILE_NAME"
+            echo "✅ File saved: $FILE_NAME"
             echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
             echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ Download process failed or returned empty file."
+            echo "❌ Download failed."
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
@@ -97,8 +97,7 @@ jobs:
 
             if [ $FILE_SIZE -gt 2097152000 ]; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-                -d "chat_id=${CHAT_ID}" \
-                -d "message_id=${MSG_ID}" \
+                -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
                 -d "text=⚠️ File size exceeds 2GB limit."
               exit 0
             fi
@@ -108,42 +107,32 @@ jobs:
             CAPTION="✅ <b>Download completed successfully</b>\n📁 <code>${FILE_NAME}</code>\n\n🤖 @YoutubeDLLBot"
 
             case "$EXT_LOWER" in
-              mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio"; FIELD="audio" ;;
-              mp4|mkv|webm|mov|avi) METHOD="sendVideo"; FIELD="video" ;;
-              *) METHOD="sendDocument"; FIELD="document" ;;
+              mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio";  FIELD="audio" ;;
+              mp4|mkv|webm|mov|avi)     METHOD="sendVideo";  FIELD="video" ;;
+              *)                        METHOD="sendDocument"; FIELD="document" ;;
             esac
-            
-            echo "📤 Uploading to Telegram..."
+
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
-              -F "chat_id=${CHAT_ID}" \
-              -F "${FIELD}=@${FILE_PATH}" \
-              -F "caption=${CAPTION}" \
-              -F "parse_mode=HTML")
+              -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" \
+              -F "caption=${CAPTION}" -F "parse_mode=HTML")
 
             BODY=$(echo "$RESPONSE" | sed '$d')
-            
+
             if echo "$BODY" | grep -q '"ok":true'; then
-              echo "✅ Success!"
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
-              
               if [ -n "$LOG_CHANNEL" ]; then
                 LOG_CAP="📋 <b>Download Log</b>\n👤 ID: <code>${CHAT_ID}</code>\n🔗 Link: ${{ github.event.inputs.url }}"
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
-                  -F "chat_id=${LOG_CHANNEL}" \
-                  -F "${FIELD}=@${FILE_PATH}" \
-                  -F "caption=${LOG_CAP}" \
-                  -F "parse_mode=HTML"
+                  -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" \
+                  -F "caption=${LOG_CAP}" -F "parse_mode=HTML"
               fi
             else
-              echo "❌ Telegram API Error: $BODY"
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-                -d "chat_id=${CHAT_ID}" \
-                -d "message_id=${MSG_ID}" \
+                -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
                 -d "text=❌ Error uploading to Telegram."
             fi
           else
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
-              -d "chat_id=${CHAT_ID}" \
-              -d "message_id=${MSG_ID}" \
+              -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
               -d "text=❌ Download failed. The link may be private or invalid."
           fi
