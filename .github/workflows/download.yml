@@ -32,7 +32,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg curl
           python3 -m pip install --upgrade pip
-          pip install --upgrade yt-dlp gallery-dl
+          # نصب نسخه شبانه yt-dlp برای دور زدن محدودیت‌های جدید یوتیوب
+          python3 -m pip install -U --pre yt-dlp gallery-dl
 
       - name: Download Content
         id: dl
@@ -42,23 +43,31 @@ jobs:
           mkdir -p /tmp/dl
           cd /tmp/dl
 
-          case "$QUALITY" in
-            "audio")
-              yt-dlp -x --audio-format mp3 --audio-quality 0 --no-playlist -o "%(title).50s.%(ext)s" "$URL" || true
-              ;;
-            "720")
-              yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 --no-playlist -o "%(title).50s.%(ext)s" "$URL" || yt-dlp --no-playlist -o "%(title).50s.%(ext)s" "$URL" || true
-              ;;
-            "480")
-              yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 --no-playlist -o "%(title).50s.%(ext)s" "$URL" || yt-dlp --no-playlist -o "%(title).50s.%(ext)s" "$URL" || true
-              ;;
-            "360")
-              yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 --no-playlist -o "%(title).50s.%(ext)s" "$URL" || yt-dlp --no-playlist -o "%(title).50s.%(ext)s" "$URL" || true
-              ;;
-            *)
-              yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --no-playlist -o "%(title).50s.%(ext)s" "$URL" || yt-dlp --no-playlist -o "%(title).50s.%(ext)s" "$URL" || true
-              ;;
-          esac
+          # پارامترهای ضد بلاک یوتیوب
+          YTDLP_ARGS="--force-ipv4 --geo-bypass --extractor-args youtube:player_client=android,web --no-playlist -o %(title).50s.%(ext)s"
+
+          if echo "$URL" | grep -qiE "instagram\.com"; then
+            # اینستاگرام با گالری دی‌ال بهتر جواب میده
+            gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_ARGS "$URL"
+          else
+            case "$QUALITY" in
+              "audio")
+                yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_ARGS "$URL" || true
+                ;;
+              "720")
+                yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true
+                ;;
+              "480")
+                yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true
+                ;;
+              "360")
+                yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true
+                ;;
+              *)
+                yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_ARGS "$URL" || yt-dlp $YTDLP_ARGS "$URL" || true
+                ;;
+            esac
+          fi
 
           FILE=$(ls -S /tmp/dl/ | head -n 1)
           if [ -n "$FILE" ] && [ -f "/tmp/dl/$FILE" ]; then
@@ -89,7 +98,6 @@ jobs:
               exit 0
             fi
 
-            # Delete the "downloading..." status message
             if [ -n "$MSG_ID" ]; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
                 -d "chat_id=${CHAT_ID}" \
@@ -98,45 +106,33 @@ jobs:
 
             EXT="${FILE_NAME##*.}"
             EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
-            CAPTION="✅ <b>دانلود با موفقیت انجام شد</b>\n📁 <code>${FILE_NAME}</code>"
+            CAPTION="✅ <b>دانلود با موفقیت انجام شد</b>\n📁 <code>${FILE_NAME}</code>\n🤖 @pvmosibot"
 
             case "$EXT_LOWER" in
-              mp3|m4a|ogg|flac|wav|aac)
-                METHOD="sendAudio"
-                FIELD="audio"
-                ;;
-              mp4|mkv|webm|mov|avi)
-                METHOD="sendVideo"
-                FIELD="video"
-                ;;
-              *)
-                METHOD="sendDocument"
-                FIELD="document"
-                ;;
+              mp3|m4a|ogg|flac|wav|aac) METHOD="sendAudio"; FIELD="audio" ;;
+              mp4|mkv|webm|mov|avi) METHOD="sendVideo"; FIELD="video" ;;
+              *) METHOD="sendDocument"; FIELD="document" ;;
             esac
 
-            # Send to user
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
               -F "chat_id=${CHAT_ID}" \
               -F "${FIELD}=@${FILE_PATH}" \
               -F "caption=${CAPTION}" \
               -F "parse_mode=HTML"
 
-            # Send copy to log channel
             if [ -n "$LOG_CHANNEL" ]; then
-              LOG_CAPTION="📋 <b>لاگ دانلود جدید</b>\n👤 کاربر: <code>${CHAT_ID}</code>\n📁 <code>${FILE_NAME}</code>\n🔗 ${{ github.event.inputs.url }}"
+              LOG_CAPTION="📋 <b>لاگ دانلود جدید</b>\n👤 کاربر: <code>${CHAT_ID}</code>\n🔗 ${{ github.event.inputs.url }}"
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
                 -F "chat_id=${LOG_CHANNEL}" \
                 -F "${FIELD}=@${FILE_PATH}" \
                 -F "caption=${LOG_CAPTION}" \
                 -F "parse_mode=HTML"
             fi
-
           else
             if [ -n "$MSG_ID" ]; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
                 -d "chat_id=${CHAT_ID}" \
                 -d "message_id=${MSG_ID}" \
-                -d "text=❌ دانلود فایل با خطا مواجه شد. لطفاً از صحت لینک مطمئن شوید."
+                -d "text=❌ دانلود فایل با خطا مواجه شد. (احتمالاً حساب خصوصی است یا لینک مسدود شده)"
             fi
           fi
