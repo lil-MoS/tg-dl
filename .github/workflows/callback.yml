@@ -1,0 +1,16 @@
+name: Status Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        default: "ping"
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check
+        run: echo "Workflow system is operational"
