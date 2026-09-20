@@ -1,4 +1,4 @@
-name: Download Media
+name: Telegram Downloader Core
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ on:
         required: false
 
 jobs:
-  process_and_upload:
+  process_media:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -31,9 +31,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg curl
+          python3 -m pip install -U pip
           python3 -m pip install -U --pre yt-dlp gallery-dl
 
-      - name: Download File
+      - name: Download Content
         id: dl
         run: |
           URL="${{ github.event.inputs.url }}"
@@ -41,8 +42,9 @@ jobs:
           mkdir -p /tmp/dl
           cd /tmp/dl
 
-          echo "🚀 Starting download for: $URL"
-          YTDLP_ARGS="--force-ipv4 --geo-bypass --restrict-filenames --no-playlist -o %(title).50s.%(ext)s"
+          echo "🚀 Processing URL: $URL"
+          # پارامترهای جدید برای دور زدن محدودیت‌های یوتیوب
+          YTDLP_ARGS="--force-ipv4 --geo-bypass --extractor-args youtube:player_client=android,mweb --no-playlist -o %(title).50s.%(ext)s"
 
           if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
             echo "📸 Using gallery-dl for Instagram..."
@@ -58,22 +60,22 @@ jobs:
             esac
           fi
 
-          echo "🔍 Searching for the largest downloaded file recursively..."
-          # پیدا کردن بزرگترین فایل در تمام زیرپوشه‌ها
-          FILE_PATH=$(find /tmp/dl -type f -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
+          # یافتن فایل نهایی (نادیده گرفتن فایل‌های ناقص part و ytdl)
+          echo "🔍 Scanning for final file..."
+          FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
           
           if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
             FILE_NAME=$(basename "$FILE_PATH")
-            echo "✅ File found: $FILE_PATH"
+            echo "✅ File successfully saved: $FILE_NAME"
             echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
             echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ No file was downloaded!"
+            echo "❌ Download process failed or returned empty file."
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
-      - name: Send to Telegram
+      - name: Telegram Upload
         run: |
           BOT_TOKEN="${{ github.event.inputs.bot_token }}"
           CHAT_ID="${{ github.event.inputs.chat_id }}"
@@ -87,11 +89,10 @@ jobs:
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
 
             if [ $FILE_SIZE -gt 52428800 ]; then
-              echo "⚠️ File is too large ($FILE_SIZE bytes). Telegram API limit is 50MB."
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
                 -d "chat_id=${CHAT_ID}" \
                 -d "message_id=${MSG_ID}" \
-                -d "text=⚠️ حجم فایل بیش از ۵۰ مگابایت است و تلگرام اجازه آپلود مستقیم را نمی‌دهد."
+                -d "text=⚠️ متأسفانه حجم فایل بیش از ۵۰ مگابایت است (محدودیت آپلود تلگرام)."
               exit 0
             fi
 
@@ -104,30 +105,22 @@ jobs:
               mp4|mkv|webm|mov|avi) METHOD="sendVideo"; FIELD="video" ;;
               *) METHOD="sendDocument"; FIELD="document" ;;
             esac
-
-            echo "📤 Uploading file to Telegram directly from GitHub server..."
             
-            # ذخیره نتیجه آپلود تلگرام برای بررسی ارور
+            echo "📤 Uploading to Telegram..."
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
               -F "chat_id=${CHAT_ID}" \
               -F "${FIELD}=@${FILE_PATH}" \
               -F "caption=${CAPTION}" \
               -F "parse_mode=HTML")
 
-            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
             BODY=$(echo "$RESPONSE" | sed '$d')
-
-            echo "🌐 Telegram HTTP Code: $HTTP_CODE"
-            echo "🌐 Telegram Response: $BODY"
-
+            
             if echo "$BODY" | grep -q '"ok":true'; then
-              echo "✅ File sent successfully."
-              # پاک کردن پیام "در حال دانلود..."
+              echo "✅ Success!"
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
               
-              # ارسال به کانال لاگ در صورت تنظیم بودن
               if [ -n "$LOG_CHANNEL" ]; then
-                LOG_CAP="📋 <b>لاگ دانلود</b>\n👤 کاربر: <code>${CHAT_ID}</code>\n🔗 ${{ github.event.inputs.url }}"
+                LOG_CAP="📋 <b>لاگ دانلود</b>\n👤 آیدی: <code>${CHAT_ID}</code>\n🔗 لینک: ${{ github.event.inputs.url }}"
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
                   -F "chat_id=${LOG_CHANNEL}" \
                   -F "${FIELD}=@${FILE_PATH}" \
@@ -135,25 +128,15 @@ jobs:
                   -F "parse_mode=HTML"
               fi
             else
-              echo "❌ Telegram rejected the upload!"
-              ERR_DESC=$(echo "$BODY" | grep -oP '"description":"\K[^\"]+')
+              echo "❌ Telegram API Error: $BODY"
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
                 -d "chat_id=${CHAT_ID}" \
                 -d "message_id=${MSG_ID}" \
-                -d "text=❌ خطا در آپلود به تلگرام: $ERR_DESC"
-                
-              # ثبت ارور در کانال لاگ
-              if [ -n "$LOG_CHANNEL" ]; then
-                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-                  -d "chat_id=${LOG_CHANNEL}" \
-                  -d "text=⚠️ <b>ارور در آپلود به تلگرام</b>\n👤 کاربر: ${CHAT_ID}\nدلیل: $ERR_DESC\nلینک: ${{ github.event.inputs.url }}" \
-                  -d "parse_mode=HTML"
-              fi
+                -d "text=❌ خطا در آپلود به تلگرام. ارتباط برقرار نشد."
             fi
           else
-            echo "❌ Sending failure message to user."
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
               -d "chat_id=${CHAT_ID}" \
               -d "message_id=${MSG_ID}" \
-              -d "text=❌ دانلود فایل با خطا مواجه شد. (احتمالاً حساب خصوصی است یا فرمت ناشناخته)"
+              -d "text=❌ دانلود فایل ناموفق بود.\nممکن است لینک خصوصی، مسدود شده یا نامعتبر باشد."
           fi
