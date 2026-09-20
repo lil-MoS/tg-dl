@@ -94,70 +94,111 @@ jobs:
           cd /tmp/dl
 
           echo "Processing URL: $URL"
-          YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
-          YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
-          YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
 
-          if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
-            gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL"
-          elif echo "$URL" | grep -qiE "soundcloud\.com"; then
-            yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
-          else
-            case "$QUALITY" in
-              "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
-              "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-              "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-              "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-              *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-            esac
+          IS_PLATFORM=false
+          if echo "$URL" | grep -qiE "youtube\.com|youtu\.be|instagram\.com|instagr\.am|tiktok\.com|twitter\.com|x\.com|soundcloud\.com|facebook\.com|fb\.watch|pinterest\.com|reddit\.com|twitch\.tv|vimeo\.com|dailymotion\.com"; then
+            IS_PLATFORM=true
           fi
 
+          if [ "$IS_PLATFORM" = "true" ]; then
+            echo "Known platform detected - using yt-dlp/gallery-dl..."
+            YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
+            YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
+            YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
+
+            if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
+              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+            elif echo "$URL" | grep -qiE "soundcloud\.com"; then
+              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
+            else
+              case "$QUALITY" in
+                "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
+                "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+                "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+                "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+                *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+              esac
+            fi
+          else
+            echo "Direct file - using curl (preserve original filename)..."
+            URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
+            FILENAME=$(basename "$URL_PATH")
+            FILENAME=$(echo "$FILENAME" | tr -cd 'A-Za-z0-9._-')
+            if [ -z "$FILENAME" ] || [ "$FILENAME" = "." ] || [ "$FILENAME" = ".." ]; then
+              FILENAME="download_$(date +%s)"
+            fi
+            echo "Filename from URL: $FILENAME"
+            curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+              --max-time 600 \
+              -o "$FILENAME" \
+              "$URL" || true
+          fi
+
+          echo "Scanning for final file..."
           FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
 
           if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
+            FILE_SIZE=$(stat -c%s "$FILE_PATH")
+            if [ "$FILE_SIZE" -lt 100 ]; then
+              echo "File too small (likely an error page)"
+              echo "status=failed" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
             MIME=$(file --mime-type -b "$FILE_PATH")
             echo "Detected MIME: $MIME"
 
-            case "$MIME" in
-              video/mp4|video/x-m4v)   EXT="mp4" ;;
-              video/x-matroska)        EXT="mkv" ;;
-              video/webm)              EXT="webm" ;;
-              video/quicktime)         EXT="mov" ;;
-              video/x-msvideo)         EXT="avi" ;;
-              audio/mpeg)              EXT="mp3" ;;
-              audio/mp4)               EXT="m4a" ;;
-              audio/ogg)               EXT="ogg" ;;
-              audio/flac|audio/x-flac) EXT="flac" ;;
-              audio/wav|audio/x-wav)   EXT="wav" ;;
-              audio/aac)               EXT="aac" ;;
-              image/jpeg)              EXT="jpg" ;;
-              image/png)               EXT="png" ;;
-              image/gif)               EXT="gif" ;;
-              image/webp)              EXT="webp" ;;
-              *)                       EXT="" ;;
-            esac
+            if [ "$IS_PLATFORM" = "true" ]; then
+              case "$MIME" in
+                video/mp4|video/x-m4v)   EXT="mp4" ;;
+                video/x-matroska)        EXT="mkv" ;;
+                video/webm)              EXT="webm" ;;
+                video/quicktime)         EXT="mov" ;;
+                video/x-msvideo)         EXT="avi" ;;
+                audio/mpeg)              EXT="mp3" ;;
+                audio/mp4)               EXT="m4a" ;;
+                audio/ogg)               EXT="ogg" ;;
+                audio/flac|audio/x-flac) EXT="flac" ;;
+                audio/wav|audio/x-wav)   EXT="wav" ;;
+                audio/aac)               EXT="aac" ;;
+                image/jpeg)              EXT="jpg" ;;
+                image/png)               EXT="png" ;;
+                image/gif)               EXT="gif" ;;
+                image/webp)              EXT="webp" ;;
+                *)                       EXT="" ;;
+              esac
 
-            case "$EXT" in
-              sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
-                echo "status=blocked" >> $GITHUB_OUTPUT
-                exit 0
-                ;;
-            esac
+              case "$EXT" in
+                sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
+                  echo "status=blocked" >> $GITHUB_OUTPUT
+                  exit 0
+                  ;;
+              esac
 
-            FILE_DIR=$(dirname "$FILE_PATH")
-            FILE_BASE=$(basename "$FILE_PATH")
-            NAME_NO_EXT="${FILE_BASE%.*}"
-            if [ -n "$EXT" ]; then
-              NEW_NAME="${NAME_NO_EXT}.${EXT}"
+              FILE_DIR=$(dirname "$FILE_PATH")
+              FILE_BASE=$(basename "$FILE_PATH")
+              NAME_NO_EXT="${FILE_BASE%.*}"
+              if [ -n "$EXT" ]; then
+                NEW_NAME="${NAME_NO_EXT}.${EXT}"
+              else
+                NEW_NAME="${FILE_BASE}"
+              fi
+              NEW_PATH="${FILE_DIR}/${NEW_NAME}"
+              if [ "$NEW_PATH" != "$FILE_PATH" ]; then
+                mv "$FILE_PATH" "$NEW_PATH"
+                FILE_PATH="$NEW_PATH"
+              fi
             else
-              NEW_NAME="${FILE_BASE}"
-            fi
-            NEW_PATH="${FILE_DIR}/${NEW_NAME}"
-            if [ "$NEW_PATH" != "$FILE_PATH" ]; then
-              mv "$FILE_PATH" "$NEW_PATH"
-              FILE_PATH="$NEW_PATH"
+              ORIG_EXT=$(echo "${FILE_PATH##*.}" | tr "[:upper:]" "[:lower:]")
+              case "$ORIG_EXT" in
+                sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
+                  echo "status=blocked" >> $GITHUB_OUTPUT
+                  exit 0
+                  ;;
+              esac
             fi
 
+            echo "Final file: $FILE_PATH (MIME: $MIME)"
             echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
             echo "file_name=$(basename "$FILE_PATH")" >> $GITHUB_OUTPUT
             echo "file_mime=$MIME" >> $GITHUB_OUTPUT
@@ -210,7 +251,13 @@ jobs:
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" -F "caption=Log from ${CHAT_ID}"
               fi
             else
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Upload error."
+              echo "First attempt failed, retrying with sendDocument..."
+              RESPONSE2=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" -F "chat_id=${CHAT_ID}" -F "document=@${FILE_PATH}" -F "caption=${CAPTION}")
+              if echo "$RESPONSE2" | grep -q '"ok":true'; then
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
+              else
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Upload error."
+              fi
             fi
           else
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Download failed."
