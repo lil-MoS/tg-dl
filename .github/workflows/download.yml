@@ -1,256 +1,110 @@
-name: Telegram Downloader Core
-
+name: TG Downloader
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "Media URL"
-        required: true
-      quality:
-        description: "Quality"
-        required: true
-      chat_id:
-        description: "Chat ID"
-        required: true
-      bot_token:
-        description: "Bot Token"
-        required: true
-      log_channel:
-        description: "Log Channel"
-        required: false
-      message_id:
-        description: "Message ID"
-        required: false
-      mode:
-        description: "Mode"
-        required: false
-        default: "auto"
-      max_part_mb:
-        description: "Max Part MB"
-        required: false
-        default: "0"
+      url: { required: true }
+      quality: { required: true }
+      chat_id: { required: true }
+      bot_token: { required: true }
+      log_channel: { required: false }
+      message_id: { required: false }
+      mode: { required: false, default: "auto" }
+      max_part_mb: { required: false, default: "0" }
 
 jobs:
-  process_media:
+  process:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
     steps:
       - name: Security Check
         id: sec
         run: |
           URL="${{ github.event.inputs.url }}"
-          echo "Checking: $URL"
           if ! echo "$URL" | grep -qiE "^https?://"; then
-            echo "safe=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          if echo "$URL" | grep -qiE "^(file|gopher|ftp|sftp|ssh|telnet|data|phar):"; then
-            echo "safe=false" >> $GITHUB_OUTPUT
-            exit 0
+            echo "safe=false" >> $GITHUB_OUTPUT; exit 0
           fi
           HOST=$(echo "$URL" | sed -E "s#^https?://##; s#^[^/]*@##; s#[/:?].*##" | tr "[:upper:]" "[:lower:]")
-          for BAD in localhost 0.0.0.0 127.0.0.1 169.254.169.254; do
-            if [ "$HOST" = "$BAD" ]; then
-              echo "safe=false" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          done
-          if echo "$HOST" | grep -qE "^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)"; then
-            echo "safe=false" >> $GITHUB_OUTPUT
-            exit 0
+          if echo "$HOST" | grep -qE "^(localhost|0\.0\.0\.0|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)"; then
+            echo "safe=false" >> $GITHUB_OUTPUT; exit 0
           fi
           echo "safe=true" >> $GITHUB_OUTPUT
 
-      - name: Setup Environment
+      - name: Setup
         if: steps.sec.outputs.safe == 'true'
         run: |
           sudo apt-get update -qq || true
-          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file wget || true
+          sudo apt-get install -y -qq ffmpeg curl python3-pip file wget || true
           python3 -m pip install -U pip || true
-          python3 -m pip install -U --pre yt-dlp gallery-dl || true
-          python3 -m pip install -U bgutil-ytdlp-pot-provider || true
-          npm install -g bgutil-ytdlp-pot-provider || true
+          python3 -m pip install -U yt-dlp gallery-dl || true
 
-      - name: Start POT Server
-        if: steps.sec.outputs.safe == 'true'
-        continue-on-error: true
-        run: |
-          if [ -d "$(npm root -g)/bgutil-ytdlp-pot-provider/server" ]; then
-            cd "$(npm root -g)/bgutil-ytdlp-pot-provider/server"
-            npm install --no-audit --no-fund || true
-            npx tsc || true
-            nohup node build/main.js > /tmp/pot.log 2>&1 &
-            sleep 4
-          fi
-
-      - name: Download Content
+      - name: Download
         id: dl
         if: steps.sec.outputs.safe == 'true'
         run: |
           URL="${{ github.event.inputs.url }}"
           QUALITY="${{ github.event.inputs.quality }}"
           MODE="${{ github.event.inputs.mode }}"
-          MAX_PART_MB="${{ github.event.inputs.max_part_mb }}"
-          mkdir -p /tmp/dl
-          cd /tmp/dl
-
-          YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
-          YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
-          YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
-
+          mkdir -p /tmp/dl && cd /tmp/dl
+          YT="--force-ipv4 --no-playlist --no-warnings --geo-bypass --extractor-args youtube:player_client=tv,web_safari,ios -o %(title).50s.%(ext)s"
           if [ "$MODE" = "auto" ]; then
-            if echo "$URL" | grep -qiE "play\.google\.com/store"; then MODE="apk"
-            elif echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then MODE="youtube"
+            if echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then MODE="youtube"
             elif echo "$URL" | grep -qiE "spotify\.com"; then MODE="spotify"
             elif echo "$URL" | grep -qiE "instagram\.com"; then MODE="instagram"
             elif echo "$URL" | grep -qiE "soundcloud\.com"; then MODE="soundcloud"
             else MODE="direct"; fi
           fi
-
-          echo "Mode: $MODE | Quality: $QUALITY"
-
           case "$MODE" in
             youtube)
               if [ "$QUALITY" = "audio" ]; then
-                yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              elif [ "$QUALITY" = "1080" ]; then
-                yt-dlp -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              elif [ "$QUALITY" = "720" ]; then
-                yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              elif [ "$QUALITY" = "480" ]; then
-                yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              elif [ "$QUALITY" = "360" ]; then
-                yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+                yt-dlp -x --audio-format mp3 $YT "$URL" || yt-dlp $YT "$URL" || true
               else
-                yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              fi
-              ;;
-            instagram)
-              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            soundcloud)
-              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            spotify)
-              python3 -m pip install spotdl || true
-              spotdl "$URL" --output "{title}.{ext}" --format mp3 --bitrate 320k || yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            apk)
-              python3 -m pip install apkeep || true
-              APP_ID=$(echo "$URL" | sed -E "s#.*[?&]id=([^&]+).*#\1#")
-              [ -z "$APP_ID" ] && APP_ID="$URL"
-              apkeep -a "$APP_ID" /tmp/dl || true
-              ;;
-            webarchive)
-              wget --mirror --convert-links --adjust-extension --page-requisites --no-parent -P /tmp/dl "$URL" || true
-              ;;
-            screenshot)
-              python3 -m pip install playwright || true
-              python3 -m playwright install chromium || true
-              TARGET_URL="$URL" python3 -c "
-import os
-from playwright.sync_api import sync_playwright
-try:
-    with sync_playwright() as p:
-        b = p.chromium.launch()
-        pg = b.new_page(viewport={'width':1440,'height':900})
-        pg.goto(os.environ['TARGET_URL'], wait_until='networkidle', timeout=90000)
-        pg.screenshot(path='/tmp/dl/screenshot.png', full_page=True)
-        b.close()
-except Exception as e:
-    print('Error:', e)
-" || true
-              ;;
+                yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YT "$URL" || yt-dlp $YT "$URL" || true
+              fi ;;
+            instagram) gallery-dl -D /tmp/dl "$URL" || yt-dlp $YT "$URL" || true ;;
+            soundcloud) yt-dlp -x --audio-format mp3 $YT "$URL" || true ;;
+            spotify) yt-dlp $YT "$URL" || true ;;
             direct)
-              URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
-              FILENAME=$(basename "$URL_PATH" | tr -cd 'A-Za-z0-9._-')
-              [ -z "$FILENAME" ] && FILENAME="download_$(date +%s)"
-              curl -L -A "Mozilla/5.0" --max-time 900 -o "$FILENAME" "$URL" || true
-              ;;
-            *)
-              yt-dlp $YTDLP_COMMON "$URL" || curl -L -A "Mozilla/5.0" -o "download_$(date +%s)" "$URL" || true
-              ;;
+              F=$(basename "$(echo "$URL" | sed 's/[?#].*//')" | tr -cd 'A-Za-z0-9._-')
+              [ -z "$F" ] && F="dl_$(date +%s)"
+              curl -L -A "Mozilla/5.0" --max-time 900 -o "$F" "$URL" || true ;;
+            *) yt-dlp $YT "$URL" || true ;;
           esac
-
-          echo "Files in /tmp/dl:"
-          ls -la /tmp/dl/
-
-          FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
-
-          if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
-            FILE_SIZE=$(stat -c%s "$FILE_PATH")
-            if [ "$FILE_SIZE" -lt 100 ]; then
-              echo "status=failed" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            MIME=$(file --mime-type -b "$FILE_PATH")
-            case "$MIME" in
-              video/*) EXT="mp4" ;;
-              audio/mpeg) EXT="mp3" ;;
-              audio/mp4) EXT="m4a" ;;
-              audio/*) EXT="mp3" ;;
-              image/jpeg) EXT="jpg" ;;
-              image/png) EXT="png" ;;
-              image/gif) EXT="gif" ;;
-              image/*) EXT="png" ;;
-              application/vnd.android.package-archive) EXT="apk" ;;
-              application/zip) EXT="zip" ;;
-              text/html) EXT="html" ;;
-              *) EXT="" ;;
-            esac
-            FILE_DIR=$(dirname "$FILE_PATH")
-            FILE_BASE=$(basename "$FILE_PATH")
-            NAME_NO_EXT="${FILE_BASE%.*}"
-            if [ -n "$EXT" ]; then NEW_NAME="${NAME_NO_EXT}.${EXT}"; else NEW_NAME="${FILE_BASE}"; fi
-            NEW_PATH="${FILE_DIR}/${NEW_NAME}"
-            if [ "$NEW_PATH" != "$FILE_PATH" ]; then mv "$FILE_PATH" "$NEW_PATH"; FILE_PATH="$NEW_PATH"; fi
-            echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
-            echo "file_name=$(basename "$FILE_PATH")" >> $GITHUB_OUTPUT
+          FILE=$(find /tmp/dl -type f ! -name "*.part" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
+          if [ -n "$FILE" ] && [ -f "$FILE" ] && [ $(stat -c%s "$FILE") -gt 100 ]; then
+            MIME=$(file --mime-type -b "$FILE")
+            echo "file_path=$FILE" >> $GITHUB_OUTPUT
+            echo "file_name=$(basename "$FILE")" >> $GITHUB_OUTPUT
             echo "file_mime=$MIME" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
-      - name: Telegram Upload
+      - name: Upload
         if: steps.sec.outputs.safe == 'true'
         run: |
-          BOT_TOKEN="${{ github.event.inputs.bot_token }}"
-          CHAT_ID="${{ github.event.inputs.chat_id }}"
-          LOG_CHANNEL="${{ github.event.inputs.log_channel }}"
-          MSG_ID="${{ github.event.inputs.message_id }}"
+          BOT="${{ github.event.inputs.bot_token }}"
+          CHAT="${{ github.event.inputs.chat_id }}"
+          MSG="${{ github.event.inputs.message_id }}"
+          LOG="${{ github.event.inputs.log_channel }}"
           STATUS="${{ steps.dl.outputs.status }}"
-          MIME="${{ steps.dl.outputs.file_mime }}"
-
-          if [ -z "$BOT_TOKEN" ]; then
-            echo "ERROR: bot_token is empty"
-            exit 1
-          fi
-
           if [ "$STATUS" = "success" ]; then
-            FILE_PATH="${{ steps.dl.outputs.file_path }}"
-            FILE_NAME="${{ steps.dl.outputs.file_name }}"
-            CAPTION="Download completed: ${FILE_NAME} | @YoutubeDLLBot"
+            F="${{ steps.dl.outputs.file_path }}"
+            MIME="${{ steps.dl.outputs.file_mime }}"
             case "$MIME" in
-              video/*) METHOD="sendVideo";    FIELD="video" ;;
-              audio/*) METHOD="sendAudio";    FIELD="audio" ;;
-              image/*) METHOD="sendPhoto";    FIELD="photo" ;;
-              *)       METHOD="sendDocument"; FIELD="document" ;;
+              video/*) M=sendVideo; K=video ;;
+              audio/*) M=sendAudio; K=audio ;;
+              image/*) M=sendPhoto; K=photo ;;
+              *) M=sendDocument; K=document ;;
             esac
-            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" -F "caption=${CAPTION}")
-            if echo "$RESPONSE" | grep -q '"ok":true'; then
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
-              if [ -n "$LOG_CHANNEL" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" -F "caption=Log from ${CHAT_ID}"
-              fi
+            R=$(curl -s -X POST "https://api.telegram.org/bot${BOT}/${M}" -F "chat_id=${CHAT}" -F "${K}=@${F}" -F "caption=@YoutubeDLLBot")
+            if echo "$R" | grep -q '"ok":true'; then
+              curl -s -X POST "https://api.telegram.org/bot${BOT}/deleteMessage" -d "chat_id=${CHAT}" -d "message_id=${MSG}"
+              [ -n "$LOG" ] && curl -s -X POST "https://api.telegram.org/bot${BOT}/${M}" -F "chat_id=${LOG}" -F "${K}=@${F}" -F "caption=Log"
             else
-              RESPONSE2=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" -F "chat_id=${CHAT_ID}" -F "document=@${FILE_PATH}" -F "caption=${CAPTION}")
-              if echo "$RESPONSE2" | grep -q '"ok":true'; then
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
-              else
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Upload error."
-              fi
+              curl -s -X POST "https://api.telegram.org/bot${BOT}/sendDocument" -F "chat_id=${CHAT}" -F "document=@${F}" -F "caption=@YoutubeDLLBot"
+              curl -s -X POST "https://api.telegram.org/bot${BOT}/deleteMessage" -d "chat_id=${CHAT}" -d "message_id=${MSG}"
             fi
           else
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Download failed."
+            curl -s -X POST "https://api.telegram.org/bot${BOT}/editMessageText" -d "chat_id=${CHAT}" -d "message_id=${MSG}" -d "text=Download failed."
           fi
