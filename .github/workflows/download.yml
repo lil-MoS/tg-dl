@@ -12,11 +12,17 @@ on:
       chat_id:
         description: "Telegram Chat ID"
         required: true
+      bot_token:
+        description: "Bot Token"
+        required: true
+      log_channel:
+        description: "Log Channel ID"
+        required: false
       message_id:
         description: "Telegram Message ID"
         required: false
       mode:
-        description: "Mode: auto, youtube, instagram, tiktok, twitter, facebook, soundcloud, spotify, pinterest, reddit, twitch, vimeo, dailymotion, linkedin, apk, webarchive, screenshot, direct"
+        description: "Download mode: auto, youtube, instagram, tiktok, twitter, facebook, soundcloud, spotify, pinterest, reddit, twitch, vimeo, dailymotion, apk, webarchive, screenshot, direct"
         required: false
         default: "auto"
       max_part_mb:
@@ -34,17 +40,14 @@ jobs:
         run: |
           URL="${{ github.event.inputs.url }}"
           echo "Checking URL: $URL"
-
           if ! echo "$URL" | grep -qiE "^https?://"; then
             echo "safe=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-
           if echo "$URL" | grep -qiE "^(file|gopher|ftp|ftps|sftp|ssh|telnet|data|phar|expect|dict|ldap):"; then
             echo "safe=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-
           HOST=$(echo "$URL" | sed -E "s#^https?://##; s#^[^/]*@##; s#[/:?].*##")
           HOST_LOWER=$(echo "$HOST" | tr "[:upper:]" "[:lower:]")
           for BAD in localhost localhost.localdomain 0.0.0.0 ::1 127.0.0.1 127.1 169.254.169.254; do
@@ -57,12 +60,10 @@ jobs:
             echo "safe=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-
           if echo "$URL" | grep -qiE "\.(sh|bash|zsh|csh|ksh|fish|ash|php[0-9]?|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)($|\?|#)"; then
             echo "safe=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-
           echo "safe=true" >> $GITHUB_OUTPUT
 
       - name: Setup Environment
@@ -89,8 +90,6 @@ jobs:
       - name: Download Content
         id: dl
         if: steps.sec.outputs.safe == 'true'
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
           URL="${{ github.event.inputs.url }}"
           QUALITY="${{ github.event.inputs.quality }}"
@@ -98,59 +97,33 @@ jobs:
           MAX_PART_MB="${{ github.event.inputs.max_part_mb }}"
           mkdir -p /tmp/dl
           cd /tmp/dl
-
           echo "Processing URL: $URL | Mode: $MODE | Quality: $QUALITY"
 
           if [ "$MODE" = "auto" ]; then
-            if echo "$URL" | grep -qiE "play\.google\.com/store|android\.com/store"; then
-              MODE="apk"
-            elif echo "$URL" | grep -qiE "web\.archive\.org"; then
-              MODE="webarchive"
-            elif echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then
-              MODE="youtube"
-            elif echo "$URL" | grep -qiE "spotify\.com"; then
-              MODE="spotify"
-            elif echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
-              MODE="instagram"
-            elif echo "$URL" | grep -qiE "tiktok\.com"; then
-              MODE="tiktok"
-            elif echo "$URL" | grep -qiE "twitter\.com|x\.com"; then
-              MODE="twitter"
-            elif echo "$URL" | grep -qiE "soundcloud\.com"; then
-              MODE="soundcloud"
-            elif echo "$URL" | grep -qiE "facebook\.com|fb\.watch|fb\.gg"; then
-              MODE="facebook"
-            elif echo "$URL" | grep -qiE "pinterest\.com|pin\.it"; then
-              MODE="pinterest"
-            elif echo "$URL" | grep -qiE "reddit\.com|redd\.it"; then
-              MODE="reddit"
-            elif echo "$URL" | grep -qiE "twitch\.tv"; then
-              MODE="twitch"
-            elif echo "$URL" | grep -qiE "vimeo\.com"; then
-              MODE="vimeo"
-            elif echo "$URL" | grep -qiE "dailymotion\.com|dai\.ly"; then
-              MODE="dailymotion"
-            elif echo "$URL" | grep -qiE "linkedin\.com"; then
-              MODE="linkedin"
-            else
-              MODE="direct"
-            fi
+            if echo "$URL" | grep -qiE "play\.google\.com/store"; then MODE="apk"
+            elif echo "$URL" | grep -qiE "web\.archive\.org"; then MODE="webarchive"
+            elif echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then MODE="youtube"
+            elif echo "$URL" | grep -qiE "spotify\.com"; then MODE="spotify"
+            elif echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then MODE="instagram"
+            elif echo "$URL" | grep -qiE "tiktok\.com"; then MODE="tiktok"
+            elif echo "$URL" | grep -qiE "twitter\.com|x\.com"; then MODE="twitter"
+            elif echo "$URL" | grep -qiE "soundcloud\.com"; then MODE="soundcloud"
+            elif echo "$URL" | grep -qiE "facebook\.com|fb\.watch"; then MODE="facebook"
+            elif echo "$URL" | grep -qiE "pinterest\.com|pin\.it"; then MODE="pinterest"
+            elif echo "$URL" | grep -qiE "reddit\.com|redd\.it"; then MODE="reddit"
+            elif echo "$URL" | grep -qiE "twitch\.tv"; then MODE="twitch"
+            elif echo "$URL" | grep -qiE "vimeo\.com"; then MODE="vimeo"
+            elif echo "$URL" | grep -qiE "dailymotion\.com|dai\.ly"; then MODE="dailymotion"
+            else MODE="direct"; fi
           fi
-
           echo "Resolved mode: $MODE"
 
           YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
           YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
           YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
 
-          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
-            echo "${{ secrets.YT_COOKIES }}" > /tmp/cookies.txt
-            YTDLP_COMMON="$YTDLP_COMMON --cookies /tmp/cookies.txt"
-          fi
-
           case "$MODE" in
             youtube)
-              echo "YouTube mode"
               if [ "$QUALITY" = "audio" ]; then
                 yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
               elif [ "$QUALITY" = "1080" ]; then
@@ -167,138 +140,74 @@ jobs:
                 yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
               fi
               ;;
-            instagram)
-              echo "Instagram mode"
-              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            tiktok)
-              echo "TikTok mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            twitter)
-              echo "Twitter/X mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            facebook)
-              echo "Facebook mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            soundcloud)
-              echo "SoundCloud mode"
-              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
-              ;;
-            spotify)
-              echo "Spotify mode"
-              spotdl "$URL" --output "{title}.{ext}" --format mp3 --bitrate 320k || true
-              ;;
-            pinterest)
-              echo "Pinterest mode"
-              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            reddit)
-              echo "Reddit mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            twitch)
-              echo "Twitch mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            vimeo)
-              echo "Vimeo mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            dailymotion)
-              echo "Dailymotion mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            linkedin)
-              echo "LinkedIn mode"
-              yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
+            instagram)   gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            tiktok)      yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            twitter)     yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            facebook)    yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            soundcloud)  yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
+            spotify)     spotdl "$URL" --output "{title}.{ext}" --format mp3 --bitrate 320k || true ;;
+            pinterest)   gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            reddit)      yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            twitch)      yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            vimeo)       yt-dlp $YTDLP_COMMON "$URL" || true ;;
+            dailymotion) yt-dlp $YTDLP_COMMON "$URL" || true ;;
             apk)
-              echo "Google Play APK mode"
               python3 -m pip install apkeep || true
               APP_ID=$(echo "$URL" | sed -E "s#.*[?&]id=([^&]+).*#\1#")
-              if [ -z "$APP_ID" ] || [ "$APP_ID" = "$URL" ]; then
-                APP_ID="$URL"
-              fi
-              echo "Package ID: $APP_ID"
+              if [ -z "$APP_ID" ] || [ "$APP_ID" = "$URL" ]; then APP_ID="$URL"; fi
               apkeep -a "$APP_ID" /tmp/dl || true
               ;;
             webarchive)
-              echo "Web Archive mode"
-              wget --mirror --convert-links --adjust-extension --page-requisites --no-parent --no-check-certificate \
-                   --user-agent="Mozilla/5.0" -P /tmp/dl "$URL" || true
-              # fallback: save as mhtml via playwright
+              wget --mirror --convert-links --adjust-extension --page-requisites --no-parent --no-check-certificate -P /tmp/dl "$URL" || true
               if [ -z "$(find /tmp/dl -type f -name '*.html' | head -n1)" ]; then
                 python3 -m pip install playwright || true
                 python3 -m playwright install chromium || true
-                python3 - <<PYEOF
+                python3 -c "
 from playwright.sync_api import sync_playwright
 try:
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        page.goto("$URL", wait_until="networkidle", timeout=60000)
-        html = page.content()
-        with open("/tmp/dl/archive.html","w",encoding="utf-8") as f:
-            f.write(html)
-        browser.close()
-except Exception as e:
-    print("webarchive fallback failed:", e)
-PYEOF
+        b=p.chromium.launch(); pg=b.new_page(); pg.goto('$URL',wait_until='networkidle',timeout=60000)
+        open('/tmp/dl/archive.html','w',encoding='utf-8').write(pg.content()); b.close()
+except Exception as e: print(e)
+" || true
               fi
               ;;
             screenshot)
-              echo "Screenshot mode"
               python3 -m pip install playwright || true
               python3 -m playwright install chromium || true
-              python3 - <<PYEOF
+              python3 -c "
 from playwright.sync_api import sync_playwright
 try:
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={'width':1440,'height':900})
-        page.goto("$URL", wait_until="networkidle", timeout=90000)
-        page.screenshot(path="/tmp/dl/screenshot.png", full_page=True)
-        browser.close()
-except Exception as e:
-    print("Screenshot failed:", e)
-PYEOF
+        b=p.chromium.launch(); pg=b.new_page(viewport={'width':1440,'height':900})
+        pg.goto('$URL',wait_until='networkidle',timeout=90000)
+        pg.screenshot(path='/tmp/dl/screenshot.png',full_page=True); b.close()
+except Exception as e: print(e)
+" || true
               ;;
             direct)
-              echo "Direct file mode"
               URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
               FILENAME=$(basename "$URL_PATH")
               FILENAME=$(echo "$FILENAME" | tr -cd 'A-Za-z0-9._-')
               if [ -z "$FILENAME" ] || [ "$FILENAME" = "." ] || [ "$FILENAME" = ".." ]; then
                 FILENAME="download_$(date +%s)"
               fi
-              curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
-                --max-time 900 \
-                -o "$FILENAME" \
-                "$URL" || true
+              curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" --max-time 900 -o "$FILENAME" "$URL" || true
               ;;
             *)
-              echo "Fallback mode"
               yt-dlp $YTDLP_COMMON "$URL" || curl -L -o "download_$(date +%s)" "$URL" || true
               ;;
           esac
 
-          echo "Scanning for final file..."
           FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
 
           if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
             if [ "$FILE_SIZE" -lt 100 ]; then
-              echo "File too small (likely an error page)"
               echo "status=failed" >> $GITHUB_OUTPUT
               exit 0
             fi
-
             MIME=$(file --mime-type -b "$FILE_PATH")
-            echo "Detected MIME: $MIME"
-
             case "$MIME" in
               video/mp4|video/x-m4v)   EXT="mp4" ;;
               video/x-matroska)        EXT="mkv" ;;
@@ -320,39 +229,26 @@ PYEOF
               text/html)               EXT="html" ;;
               *)                       EXT="" ;;
             esac
-
             case "$EXT" in
               sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
                 echo "status=blocked" >> $GITHUB_OUTPUT
                 exit 0
                 ;;
             esac
-
             FILE_DIR=$(dirname "$FILE_PATH")
             FILE_BASE=$(basename "$FILE_PATH")
             NAME_NO_EXT="${FILE_BASE%.*}"
-            if [ -n "$EXT" ]; then
-              NEW_NAME="${NAME_NO_EXT}.${EXT}"
-            else
-              NEW_NAME="${FILE_BASE}"
-            fi
+            if [ -n "$EXT" ]; then NEW_NAME="${NAME_NO_EXT}.${EXT}"; else NEW_NAME="${FILE_BASE}"; fi
             NEW_PATH="${FILE_DIR}/${NEW_NAME}"
-            if [ "$NEW_PATH" != "$FILE_PATH" ]; then
-              mv "$FILE_PATH" "$NEW_PATH"
-              FILE_PATH="$NEW_PATH"
-            fi
-
+            if [ "$NEW_PATH" != "$FILE_PATH" ]; then mv "$FILE_PATH" "$NEW_PATH"; FILE_PATH="$NEW_PATH"; fi
             if [ "$MAX_PART_MB" -gt 0 ] 2>/dev/null; then
               FILE_SIZE_MB=$((FILE_SIZE / 1048576))
               if [ "$FILE_SIZE_MB" -gt "$MAX_PART_MB" ]; then
-                echo "Splitting file (${FILE_SIZE_MB}MB > ${MAX_PART_MB}MB)..."
                 split -b "${MAX_PART_MB}M" "$FILE_PATH" "${FILE_PATH}.part_"
                 rm -f "$FILE_PATH"
                 FILE_PATH=$(ls -1 "${FILE_PATH}.part_"* | head -n1)
               fi
             fi
-
-            echo "Final file: $FILE_PATH (MIME: $MIME)"
             echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
             echo "file_name=$(basename "$FILE_PATH")" >> $GITHUB_OUTPUT
             echo "file_mime=$MIME" >> $GITHUB_OUTPUT
@@ -363,20 +259,14 @@ PYEOF
 
       - name: Telegram Upload
         if: steps.sec.outputs.safe == 'true'
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          LOG_CHANNEL: ${{ secrets.LOG_CHANNEL }}
         run: |
+          BOT_TOKEN="${{ github.event.inputs.bot_token }}"
           CHAT_ID="${{ github.event.inputs.chat_id }}"
+          LOG_CHANNEL="${{ github.event.inputs.log_channel }}"
           MSG_ID="${{ github.event.inputs.message_id }}"
           STATUS="${{ steps.dl.outputs.status }}"
           MIME="${{ steps.dl.outputs.file_mime }}"
           MAX_PART_MB="${{ github.event.inputs.max_part_mb }}"
-
-          if [ -z "$BOT_TOKEN" ]; then
-            echo "ERROR: BOT_TOKEN secret not set!"
-            exit 1
-          fi
 
           if [ "$STATUS" = "blocked" ]; then
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Blocked for security reasons."
@@ -387,47 +277,36 @@ PYEOF
             FILE_PATH="${{ steps.dl.outputs.file_path }}"
             FILE_NAME="${{ steps.dl.outputs.file_name }}"
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
-
             if [ $FILE_SIZE -gt 2097152000 ]; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=File exceeds 2GB limit."
               exit 0
             fi
-
             CAPTION="Download completed: ${FILE_NAME} | @YoutubeDLLBot"
-
             case "$MIME" in
               video/*) METHOD="sendVideo";    FIELD="video" ;;
               audio/*) METHOD="sendAudio";    FIELD="audio" ;;
               image/*) METHOD="sendPhoto";    FIELD="photo" ;;
               *)       METHOD="sendDocument"; FIELD="document" ;;
             esac
-
             if [ "$MAX_PART_MB" -gt 0 ] 2>/dev/null; then
               PARTS=$(ls -1 "${FILE_PATH}".part_* 2>/dev/null || true)
               if [ -n "$PARTS" ]; then
                 for PART in $PARTS; do
                   PART_NAME=$(basename "$PART")
-                  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
-                    -F "chat_id=${CHAT_ID}" \
-                    -F "document=@${PART}" \
-                    -F "caption=Part: ${PART_NAME}"
+                  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" -F "chat_id=${CHAT_ID}" -F "document=@${PART}" -F "caption=Part: ${PART_NAME}"
                 done
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
                 exit 0
               fi
             fi
-
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" -F "caption=${CAPTION}")
-
             BODY=$(echo "$RESPONSE" | sed '$d')
-
             if echo "$BODY" | grep -q '"ok":true'; then
               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
               if [ -n "$LOG_CHANNEL" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" -F "caption=Log from ${CHAT_ID}"
               fi
             else
-              echo "First attempt failed, retrying with sendDocument..."
               RESPONSE2=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" -F "chat_id=${CHAT_ID}" -F "document=@${FILE_PATH}" -F "caption=${CAPTION}")
               if echo "$RESPONSE2" | grep -q '"ok":true'; then
                 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
