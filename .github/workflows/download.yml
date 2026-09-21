@@ -67,22 +67,102 @@ jobs:
         if: steps.sec.outputs.safe == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file
-          python3 -m pip install -U pip
-          python3 -m pip install -U --pre yt-dlp gallery-dl
-          python3 -m pip install -U bgutil-ytdlp-pot-provider || true
-          npm install -g bgutil-ytdlp-pot-provider || true
+          sudo apt-get install -y -qq ffmpeg curl jq file atomicparsley python3-pip
+          python3 -m pip install -U pip setuptools wheel
+          python3 -m pip install -U --pre "yt-dlp[default]"
+          python3 -m pip install -U gallery-dl
+          python3 -m pip install -U mutagen pycryptodomex brotli certifi websockets requests
+          python3 -m pip install -U bgutil-ytdlp-pot-provider 2>/dev/null || true
 
-      - name: Start POT Server
+      - name: Setup PO Token Provider
         if: steps.sec.outputs.safe == 'true'
         run: |
-          if [ -d "$(npm root -g)/bgutil-ytdlp-pot-provider/server" ]; then
-            cd "$(npm root -g)/bgutil-ytdlp-pot-provider/server"
-            npm install --no-audit --no-fund || true
-            npx tsc || true
-            nohup node build/main.js > /tmp/pot.log 2>&1 &
-            sleep 4
+          npm install -g bgutil-ytdlp-pot-provider 2>/dev/null || true
+
+          POT_DIR=$(npm root -g)/bgutil-ytdlp-pot-provider/server 2>/dev/null || true
+          if [ -d "$POT_DIR" ]; then
+            cd "$POT_DIR"
+            npm install --no-audit --no-fund 2>/dev/null || true
+            if [ -f "tsconfig.json" ]; then
+              npx tsc 2>/dev/null || true
+            fi
+            if [ -f "build/main.js" ]; then
+              nohup node build/main.js > /tmp/pot_server.log 2>&1 &
+              echo "PO Token server started"
+              sleep 5
+              if curl -s http://127.0.0.1:4416/ping > /dev/null 2>&1; then
+                echo "PO Token server is responding"
+              else
+                echo "PO Token server not responding, continuing without it"
+              fi
+            fi
           fi
+
+          mkdir -p /tmp/yt-dlp-plugins
+          POT_PLUGIN=$(find $(npm root -g)/bgutil-ytdlp-pot-provider -name "bgutil-ytdlp-pot-provider.lua" 2>/dev/null | head -1)
+          if [ -n "$POT_PLUGIN" ] && [ -f "$POT_PLUGIN" ]; then
+            cp "$POT_PLUGIN" /tmp/yt-dlp-plugins/
+            echo "PO Token plugin copied"
+          fi
+
+      - name: Setup Cookies
+        if: steps.sec.outputs.safe == 'true'
+        run: |
+          mkdir -p /tmp/cookies
+
+          cat > /tmp/cookies/youtube_cookies.txt << 'COOKIES_EOF'
+          # Netscape HTTP Cookie File
+          # This file is generated automatically
+          .youtube.com	TRUE	/	TRUE	0	CONSENT	YES+cb
+          .youtube.com	TRUE	/	FALSE	0	PREF	tz=UTC&f6=40000000
+          COOKIES_EOF
+
+          cat > /tmp/cookies/instagram_cookies.txt << 'COOKIES_EOF'
+          # Netscape HTTP Cookie File
+          .instagram.com	TRUE	/	TRUE	0	ig_did	placeholder
+          .instagram.com	TRUE	/	TRUE	0	csrftoken	placeholder
+          COOKIES_EOF
+
+          cat > /tmp/cookies/tiktok_cookies.txt << 'COOKIES_EOF'
+          # Netscape HTTP Cookie File
+          .tiktok.com	TRUE	/	TRUE	0	tt_webid	placeholder
+          COOKIES_EOF
+
+      - name: Configure gallery-dl
+        if: steps.sec.outputs.safe == 'true'
+        run: |
+          mkdir -p ~/.config/gallery-dl
+          cat > ~/.config/gallery-dl/config.json << 'GDLCONF'
+          {
+            "extractor": {
+              "base-directory": "/tmp/dl",
+              "filename": "{filename}.{extension}",
+              "instagram": {
+                "username": null,
+                "password": null,
+                "sleep-request": [1.0, 3.0]
+              },
+              "twitter": {
+                "text-tweets": false,
+                "retweets": false
+              },
+              "reddit": {
+                "comments": 0,
+                "recursion": 0
+              }
+            },
+            "downloader": {
+              "rate": "5M",
+              "retries": 3,
+              "timeout": 30.0,
+              "part-directory": "/tmp/dl/.part"
+            },
+            "output": {
+              "mode": "terminal",
+              "progress": true
+            }
+          }
+          GDLCONF
 
       - name: Download Content
         id: dl
@@ -93,54 +173,292 @@ jobs:
           mkdir -p /tmp/dl
           cd /tmp/dl
 
+          echo "========================================="
           echo "Processing URL: $URL"
+          echo "Requested Quality: $QUALITY"
+          echo "========================================="
 
           IS_PLATFORM=false
-          if echo "$URL" | grep -qiE "youtube\.com|youtu\.be|instagram\.com|instagr\.am|tiktok\.com|twitter\.com|x\.com|soundcloud\.com|facebook\.com|fb\.watch|pinterest\.com|reddit\.com|twitch\.tv|vimeo\.com|dailymotion\.com"; then
+          PLATFORM="direct"
+
+          if echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then
             IS_PLATFORM=true
+            PLATFORM="youtube"
+          elif echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
+            IS_PLATFORM=true
+            PLATFORM="instagram"
+          elif echo "$URL" | grep -qiE "tiktok\.com"; then
+            IS_PLATFORM=true
+            PLATFORM="tiktok"
+          elif echo "$URL" | grep -qiE "twitter\.com|x\.com"; then
+            IS_PLATFORM=true
+            PLATFORM="twitter"
+          elif echo "$URL" | grep -qiE "soundcloud\.com"; then
+            IS_PLATFORM=true
+            PLATFORM="soundcloud"
+          elif echo "$URL" | grep -qiE "spotify\.com"; then
+            IS_PLATFORM=true
+            PLATFORM="spotify"
+          elif echo "$URL" | grep -qiE "facebook\.com|fb\.watch|fb\.com"; then
+            IS_PLATFORM=true
+            PLATFORM="facebook"
+          elif echo "$URL" | grep -qiE "pinterest\.com|pin\.it"; then
+            IS_PLATFORM=true
+            PLATFORM="pinterest"
+          elif echo "$URL" | grep -qiE "reddit\.com|redd\.it"; then
+            IS_PLATFORM=true
+            PLATFORM="reddit"
+          elif echo "$URL" | grep -qiE "twitch\.tv"; then
+            IS_PLATFORM=true
+            PLATFORM="twitch"
+          elif echo "$URL" | grep -qiE "vimeo\.com"; then
+            IS_PLATFORM=true
+            PLATFORM="vimeo"
+          elif echo "$URL" | grep -qiE "dailymotion\.com|dai\.ly"; then
+            IS_PLATFORM=true
+            PLATFORM="dailymotion"
           fi
 
-          if [ "$IS_PLATFORM" = "true" ]; then
-            echo "Known platform detected - using yt-dlp/gallery-dl..."
-            YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
-            YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
-            YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
+          echo "Detected platform: $PLATFORM"
 
-            if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
-              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-            elif echo "$URL" | grep -qiE "soundcloud\.com"; then
-              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
-            else
-              case "$QUALITY" in
-                "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
-                "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-                "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-                "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-                *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-              esac
+          YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass --no-check-certificates"
+          YTDLP_COMMON="$YTDLP_COMMON --socket-timeout 30 --retries 5 --fragment-retries 5"
+          YTDLP_COMMON="$YTDLP_COMMON --buffer-size 16K --concurrent-fragments 4"
+          YTDLP_COMMON="$YTDLP_COMMON --extractor-retries 3"
+          YTDLP_COMMON="$YTDLP_COMMON -o %(title).80s.%(ext)s"
+          YTDLP_COMMON="$YTDLP_COMMON --trim-filenames 100"
+          YTDLP_COMMON="$YTDLP_COMMON --embed-thumbnail --add-metadata"
+          YTDLP_COMMON="$YTDLP_COMMON --user-agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'"
+
+          if [ -d "/tmp/yt-dlp-plugins" ] && [ "$(ls -A /tmp/yt-dlp-plugins 2>/dev/null)" ]; then
+            YTDLP_COMMON="$YTDLP_COMMON --plugin-dirs /tmp/yt-dlp-plugins"
+          fi
+
+          DOWNLOAD_OK=false
+
+          if [ "$IS_PLATFORM" = "true" ]; then
+            case "$PLATFORM" in
+              youtube)
+                echo "--- YouTube Download ---"
+                YT_OPTS="$YTDLP_COMMON"
+                YT_OPTS="$YT_OPTS --extractor-args youtube:player_client=tv,web_safari,ios,mweb"
+                YT_OPTS="$YT_OPTS --extractor-args youtube:lang=en"
+                if [ -f "/tmp/cookies/youtube_cookies.txt" ]; then
+                  YT_OPTS="$YT_OPTS --cookies /tmp/cookies/youtube_cookies.txt"
+                fi
+
+                case "$QUALITY" in
+                  audio)
+                    echo "Extracting audio..."
+                    yt-dlp -x --audio-format mp3 --audio-quality 0 $YT_OPTS "$URL" && DOWNLOAD_OK=true
+                    if [ "$DOWNLOAD_OK" = "false" ]; then
+                      yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                    fi
+                    ;;
+                  1080)
+                    yt-dlp -f "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" --merge-output-format mp4 $YT_OPTS "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  720)
+                    yt-dlp -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best" --merge-output-format mp4 $YT_OPTS "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  480)
+                    yt-dlp -f "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best" --merge-output-format mp4 $YT_OPTS "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  360)
+                    yt-dlp -f "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best" --merge-output-format mp4 $YT_OPTS "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  *)
+                    yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best" --merge-output-format mp4 $YT_OPTS "$URL" && DOWNLOAD_OK=true
+                    ;;
+                esac
+
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  echo "Retrying YouTube with fallback settings..."
+                  FALLBACK="$YTDLP_COMMON --extractor-args youtube:player_client=web_creator,android"
+                  case "$QUALITY" in
+                    audio) yt-dlp -x --audio-format mp3 $FALLBACK "$URL" && DOWNLOAD_OK=true ;;
+                    *)     yt-dlp -f "best" $FALLBACK "$URL" && DOWNLOAD_OK=true ;;
+                  esac
+                fi
+                ;;
+
+              instagram)
+                echo "--- Instagram Download ---"
+                IG_OPTS="$YTDLP_COMMON"
+                if [ -f "/tmp/cookies/instagram_cookies.txt" ]; then
+                  IG_OPTS="$IG_OPTS --cookies /tmp/cookies/instagram_cookies.txt"
+                fi
+                gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  yt-dlp $IG_OPTS "$URL" && DOWNLOAD_OK=true
+                fi
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  yt-dlp --extractor-args "instagram:api_type=graphql" $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                fi
+                ;;
+
+              tiktok)
+                echo "--- TikTok Download ---"
+                TT_OPTS="$YTDLP_COMMON"
+                if [ -f "/tmp/cookies/tiktok_cookies.txt" ]; then
+                  TT_OPTS="$TT_OPTS --cookies /tmp/cookies/tiktok_cookies.txt"
+                fi
+                if [ "$QUALITY" = "audio" ]; then
+                  yt-dlp -x --audio-format mp3 --audio-quality 0 $TT_OPTS "$URL" && DOWNLOAD_OK=true
+                else
+                  yt-dlp -f "best" --merge-output-format mp4 $TT_OPTS "$URL" && DOWNLOAD_OK=true
+                fi
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+                fi
+                ;;
+
+              twitter)
+                echo "--- Twitter/X Download ---"
+                case "$QUALITY" in
+                  audio)
+                    yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  720)
+                    yt-dlp -f "best[height<=720]/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  480)
+                    yt-dlp -f "best[height<=480]/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                    ;;
+                  *)
+                    yt-dlp -f "best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                    ;;
+                esac
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+                fi
+                ;;
+
+              soundcloud)
+                echo "--- SoundCloud Download ---"
+                yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  yt-dlp -x --audio-format mp3 $YTDLP_COMMON --no-geo-bypass "$URL" && DOWNLOAD_OK=true
+                fi
+                ;;
+
+              spotify)
+                echo "--- Spotify Download ---"
+                yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                ;;
+
+              facebook)
+                echo "--- Facebook Download ---"
+                case "$QUALITY" in
+                  audio) yt-dlp -x --audio-format mp3 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  720) yt-dlp -f "best[height<=720]/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  *) yt-dlp -f "best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                esac
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+                fi
+                ;;
+
+              pinterest)
+                echo "--- Pinterest Download ---"
+                gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  yt-dlp $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
+                fi
+                ;;
+
+              reddit)
+                echo "--- Reddit Download ---"
+                gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+                if [ "$DOWNLOAD_OK" = "false" ]; then
+                  case "$QUALITY" in
+                    audio) yt-dlp -x --audio-format mp3 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                    *) yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  esac
+                fi
+                ;;
+
+              twitch)
+                echo "--- Twitch Download ---"
+                case "$QUALITY" in
+                  audio) yt-dlp -x --audio-format mp3 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  720) yt-dlp -f "720p/best[height<=720]/best" $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  *) yt-dlp -f "best" $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                esac
+                ;;
+
+              vimeo)
+                echo "--- Vimeo Download ---"
+                case "$QUALITY" in
+                  audio) yt-dlp -x --audio-format mp3 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  1080) yt-dlp -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  720) yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  *) yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                esac
+                ;;
+
+              dailymotion)
+                echo "--- Dailymotion Download ---"
+                case "$QUALITY" in
+                  audio) yt-dlp -x --audio-format mp3 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  *) yt-dlp -f "best" --merge-output-format mp4 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                esac
+                ;;
+
+              *)
+                echo "--- Generic Platform Download ---"
+                case "$QUALITY" in
+                  audio) yt-dlp -x --audio-format mp3 $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                  *) yt-dlp -f "best" $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true ;;
+                esac
+                ;;
+            esac
+
+            if [ "$DOWNLOAD_OK" = "false" ]; then
+              echo "All platform methods failed, trying generic yt-dlp..."
+              yt-dlp $YTDLP_COMMON "$URL" && DOWNLOAD_OK=true
             fi
+            if [ "$DOWNLOAD_OK" = "false" ]; then
+              echo "Trying gallery-dl as last resort..."
+              gallery-dl --no-mtime -D /tmp/dl "$URL" && DOWNLOAD_OK=true
+            fi
+
           else
-            echo "Direct file - using curl (preserve original filename)..."
-            URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
-            FILENAME=$(basename "$URL_PATH")
-            FILENAME=$(echo "$FILENAME" | tr -cd 'A-Za-z0-9._-')
+            echo "=== Direct File Download ==="
+            URL_CLEAN=$(echo "$URL" | sed s/[?#].*//g)
+            FILENAME=$(basename "$URL_CLEAN")
+            FILENAME=$(echo "$FILENAME" | tr -cd A-Za-z0-9._-)
             if [ -z "$FILENAME" ] || [ "$FILENAME" = "." ] || [ "$FILENAME" = ".." ]; then
               FILENAME="download_$(date +%s)"
             fi
             echo "Filename from URL: $FILENAME"
-            curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
-              --max-time 600 \
-              -o "$FILENAME" \
-              "$URL" || true
+            curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+              --max-time 600 --retry 3 --retry-delay 5 \
+              -o "$FILENAME" "$URL" && DOWNLOAD_OK=true
+            if [ "$DOWNLOAD_OK" = "false" ]; then
+              echo "curl failed, trying wget..."
+              wget -q --no-check-certificate --timeout=600 -O "$FILENAME" "$URL" && DOWNLOAD_OK=true
+            fi
           fi
 
-          echo "Scanning for final file..."
-          FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
+          echo ""
+          echo "========================================="
+          echo "Scanning for downloaded files..."
+          ls -la /tmp/dl/ 2>/dev/null || true
+          echo "========================================="
+
+          FILE_PATH=$(find /tmp/dl -maxdepth 3 -type f \
+            ! -name "*.part" ! -name "*.ytdl" ! -name "*.temp" \
+            ! -name "*.tmp" ! -name ".DS_Store" ! -name "*.json" \
+            ! -name "config.json" \
+            -exec stat -c "%s %n" {} + 2>/dev/null | sort -n -r | head -n1 | cut -d" " -f2-)
 
           if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
+            echo "Found file: $FILE_PATH ($FILE_SIZE bytes)"
+
             if [ "$FILE_SIZE" -lt 100 ]; then
-              echo "File too small (likely an error page)"
+              echo "File too small - likely error page"
               echo "status=failed" >> $GITHUB_OUTPUT
               exit 0
             fi
@@ -148,24 +466,42 @@ jobs:
             MIME=$(file --mime-type -b "$FILE_PATH")
             echo "Detected MIME: $MIME"
 
+            if echo "$MIME" | grep -qiE "text/html|text/plain|text/xml|application/json"; then
+              HEAD=$(head -c 200 "$FILE_PATH")
+              if echo "$HEAD" | grep -qiE "<html|<!doctype|{|error|denied|forbidden|not.found"; then
+                echo "File appears to be an error page, not media"
+                echo "status=failed" >> $GITHUB_OUTPUT
+                exit 0
+              fi
+            fi
+
             if [ "$IS_PLATFORM" = "true" ]; then
               case "$MIME" in
-                video/mp4|video/x-m4v)   EXT="mp4" ;;
-                video/x-matroska)        EXT="mkv" ;;
-                video/webm)              EXT="webm" ;;
-                video/quicktime)         EXT="mov" ;;
-                video/x-msvideo)         EXT="avi" ;;
-                audio/mpeg)              EXT="mp3" ;;
-                audio/mp4)               EXT="m4a" ;;
-                audio/ogg)               EXT="ogg" ;;
-                audio/flac|audio/x-flac) EXT="flac" ;;
-                audio/wav|audio/x-wav)   EXT="wav" ;;
-                audio/aac)               EXT="aac" ;;
-                image/jpeg)              EXT="jpg" ;;
-                image/png)               EXT="png" ;;
-                image/gif)               EXT="gif" ;;
-                image/webp)              EXT="webp" ;;
-                *)                       EXT="" ;;
+                video/mp4|video/x-m4v)       EXT="mp4" ;;
+                video/x-matroska)            EXT="mkv" ;;
+                video/webm)                  EXT="webm" ;;
+                video/quicktime)             EXT="mov" ;;
+                video/x-msvideo)             EXT="avi" ;;
+                video/x-flv)                 EXT="flv" ;;
+                video/3gpp)                  EXT="3gp" ;;
+                audio/mpeg)                  EXT="mp3" ;;
+                audio/mp4|audio/x-m4a)       EXT="m4a" ;;
+                audio/ogg|audio/vorbis)      EXT="ogg" ;;
+                audio/opus)                  EXT="opus" ;;
+                audio/flac|audio/x-flac)     EXT="flac" ;;
+                audio/wav|audio/x-wav)       EXT="wav" ;;
+                audio/aac)                   EXT="aac" ;;
+                audio/webm)                  EXT="weba" ;;
+                image/jpeg)                  EXT="jpg" ;;
+                image/png)                   EXT="png" ;;
+                image/gif)                   EXT="gif" ;;
+                image/webp)                  EXT="webp" ;;
+                image/heic)                  EXT="heic" ;;
+                image/svg+xml)               EXT="svg" ;;
+                application/pdf)             EXT="pdf" ;;
+                application/zip)             EXT="zip" ;;
+                application/x-rar*)          EXT="rar" ;;
+                *)                           EXT="" ;;
               esac
 
               case "$EXT" in
@@ -198,12 +534,16 @@ jobs:
               esac
             fi
 
-            echo "Final file: $FILE_PATH (MIME: $MIME)"
+            FINAL_MIME=$(file --mime-type -b "$FILE_PATH")
+            echo "Final file: $FILE_PATH"
+            echo "Final MIME: $FINAL_MIME"
+            echo "Final size: $(stat -c%s "$FILE_PATH") bytes"
             echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
             echo "file_name=$(basename "$FILE_PATH")" >> $GITHUB_OUTPUT
-            echo "file_mime=$MIME" >> $GITHUB_OUTPUT
+            echo "file_mime=$FINAL_MIME" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
           else
+            echo "No valid file found"
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
@@ -218,7 +558,10 @@ jobs:
           MIME="${{ steps.dl.outputs.file_mime }}"
 
           if [ "$STATUS" = "blocked" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Blocked for security reasons."
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+              -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
+              -d "text=🚫 This file type is blocked for security reasons." \
+              -d "parse_mode=HTML"
             exit 0
           fi
 
@@ -227,38 +570,101 @@ jobs:
             FILE_NAME="${{ steps.dl.outputs.file_name }}"
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
 
+            echo "Uploading: $FILE_NAME ($FILE_SIZE bytes, $MIME)"
+
             if [ $FILE_SIZE -gt 2097152000 ]; then
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=File exceeds 2GB limit."
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+                -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
+                -d "text=❌ File exceeds 2GB Telegram limit." \
+                -d "parse_mode=HTML"
               exit 0
             fi
 
-            CAPTION="Download completed: ${FILE_NAME} | @YoutubeDLLBot"
+            CAPTION="✅ <b>${FILE_NAME}</b> | @YoutubeDLLBot"
 
             case "$MIME" in
-              video/*) METHOD="sendVideo";    FIELD="video" ;;
-              audio/*) METHOD="sendAudio";    FIELD="audio" ;;
-              image/*) METHOD="sendPhoto";    FIELD="photo" ;;
-              *)       METHOD="sendDocument"; FIELD="document" ;;
+              video/*)
+                METHOD="sendVideo"
+                FIELD="video"
+                EXTRA="-F supports_streaming=true"
+                ;;
+              audio/*)
+                METHOD="sendAudio"
+                FIELD="audio"
+                EXTRA=""
+                ;;
+              image/gif)
+                METHOD="sendAnimation"
+                FIELD="animation"
+                EXTRA=""
+                ;;
+              image/*)
+                METHOD="sendPhoto"
+                FIELD="photo"
+                EXTRA=""
+                ;;
+              *)
+                METHOD="sendDocument"
+                FIELD="document"
+                EXTRA=""
+                ;;
             esac
 
-            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" -F "caption=${CAPTION}")
+            echo "Using method: $METHOD (field: $FIELD)"
 
-            BODY=$(echo "$RESPONSE" | sed '$d')
+            RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 300 \
+              -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
+              -F "chat_id=${CHAT_ID}" \
+              -F "${FIELD}=@${FILE_PATH}" \
+              -F "caption=${CAPTION}" \
+              -F "parse_mode=HTML" \
+              $EXTRA)
 
-            if echo "$BODY" | grep -q '"ok":true'; then
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
-              if [ -n "$LOG_CHANNEL" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${LOG_CHANNEL}" -F "${FIELD}=@${FILE_PATH}" -F "caption=Log from ${CHAT_ID}"
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | sed $d)
+
+            echo "Response code: $HTTP_CODE"
+
+            if echo "$BODY" | grep -q "ok":true; then
+              echo "Upload successful!"
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
+                -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" || true
+
+              if [ -n "$LOG_CHANNEL" ] && [ "$LOG_CHANNEL" != "" ]; then
+                echo "Sending to log channel..."
+                curl -s --max-time 300 \
+                  -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
+                  -F "chat_id=${LOG_CHANNEL}" \
+                  -F "${FIELD}=@${FILE_PATH}" \
+                  -F "caption=📋 Log | User: ${CHAT_ID} | File: ${FILE_NAME}" \
+                  -F "parse_mode=HTML" \
+                  $EXTRA || true
               fi
             else
-              echo "First attempt failed, retrying with sendDocument..."
-              RESPONSE2=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" -F "chat_id=${CHAT_ID}" -F "document=@${FILE_PATH}" -F "caption=${CAPTION}")
-              if echo "$RESPONSE2" | grep -q '"ok":true'; then
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
+              echo "Primary upload failed, trying sendDocument fallback..."
+              RESPONSE2=$(curl -s --max-time 300 \
+                -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${CHAT_ID}" \
+                -F "document=@${FILE_PATH}" \
+                -F "caption=${CAPTION}" \
+                -F "parse_mode=HTML")
+
+              if echo "$RESPONSE2" | grep -q "ok":true; then
+                echo "Fallback upload successful!"
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
+                  -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" || true
               else
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Upload error."
+                echo "All upload attempts failed"
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+                  -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
+                  -d "text=❌ Upload to Telegram failed. The file might be too large or in an unsupported format." \
+                  -d "parse_mode=HTML"
               fi
             fi
           else
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Download failed."
+            echo "Download failed, notifying user..."
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+              -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
+              -d "text=❌ Download failed. The link may be private, expired, or geo-restricted." \
+              -d "parse_mode=HTML"
           fi
