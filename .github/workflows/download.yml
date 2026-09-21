@@ -7,25 +7,27 @@ on:
         description: "Media URL"
         required: true
       quality:
-        description: "Quality"
+        description: "Quality (best, 4k, 1080, 720, 480, 360, audio)"
         required: true
       chat_id:
         description: "Telegram Chat ID"
         required: true
-      bot_token:
-        description: "Bot Token"
-        required: true
-      log_channel:
-        description: "Log Channel ID"
-        required: false
       message_id:
         description: "Telegram Message ID"
         required: false
+      mode:
+        description: "Download mode: auto, youtube, spotify, apk, webarchive, screenshot, instagram, soundcloud, direct"
+        required: false
+        default: "auto"
+      max_part_mb:
+        description: "Max part size in MB for splitting (0 = no split)"
+        required: false
+        default: "0"
 
 jobs:
   process_media:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Security Check
         id: sec
@@ -67,9 +69,9 @@ jobs:
         if: steps.sec.outputs.safe == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file
+          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file aria2
           python3 -m pip install -U pip
-          python3 -m pip install -U --pre yt-dlp gallery-dl
+          python3 -m pip install -U --pre yt-dlp gallery-dl spotdl
           python3 -m pip install -U bgutil-ytdlp-pot-provider || true
           npm install -g bgutil-ytdlp-pot-provider || true
 
@@ -87,52 +89,126 @@ jobs:
       - name: Download Content
         id: dl
         if: steps.sec.outputs.safe == 'true'
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
           URL="${{ github.event.inputs.url }}"
           QUALITY="${{ github.event.inputs.quality }}"
+          MODE="${{ github.event.inputs.mode }}"
+          MAX_PART_MB="${{ github.event.inputs.max_part_mb }}"
           mkdir -p /tmp/dl
           cd /tmp/dl
 
-          echo "Processing URL: $URL"
+          echo "Processing URL: $URL | Mode: $MODE | Quality: $QUALITY"
 
-          IS_PLATFORM=false
-          if echo "$URL" | grep -qiE "youtube\.com|youtu\.be|instagram\.com|instagr\.am|tiktok\.com|twitter\.com|x\.com|soundcloud\.com|facebook\.com|fb\.watch|pinterest\.com|reddit\.com|twitch\.tv|vimeo\.com|dailymotion\.com"; then
-            IS_PLATFORM=true
-          fi
-
-          if [ "$IS_PLATFORM" = "true" ]; then
-            echo "Known platform detected - using yt-dlp/gallery-dl..."
-            YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
-            YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
-            YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
-
-            if echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
-              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+          if [ "$MODE" = "auto" ]; then
+            if echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then
+              MODE="youtube"
+            elif echo "$URL" | grep -qiE "spotify\.com"; then
+              MODE="spotify"
+            elif echo "$URL" | grep -qiE "play\.google\.com|android\.com/store"; then
+              MODE="apk"
+            elif echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
+              MODE="instagram"
+            elif echo "$URL" | grep -qiE "tiktok\.com"; then
+              MODE="tiktok"
+            elif echo "$URL" | grep -qiE "twitter\.com|x\.com"; then
+              MODE="twitter"
             elif echo "$URL" | grep -qiE "soundcloud\.com"; then
-              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
+              MODE="soundcloud"
             else
-              case "$QUALITY" in
-                "audio") yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true ;;
-                "720")   yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-                "480")   yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-                "360")   yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-                *)       yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true ;;
-              esac
+              MODE="direct"
             fi
-          else
-            echo "Direct file - using curl (preserve original filename)..."
-            URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
-            FILENAME=$(basename "$URL_PATH")
-            FILENAME=$(echo "$FILENAME" | tr -cd 'A-Za-z0-9._-')
-            if [ -z "$FILENAME" ] || [ "$FILENAME" = "." ] || [ "$FILENAME" = ".." ]; then
-              FILENAME="download_$(date +%s)"
-            fi
-            echo "Filename from URL: $FILENAME"
-            curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
-              --max-time 600 \
-              -o "$FILENAME" \
-              "$URL" || true
           fi
+
+          echo "Resolved mode: $MODE"
+
+          YTDLP_COMMON="--force-ipv4 --no-playlist --no-warnings --geo-bypass"
+          YTDLP_COMMON="$YTDLP_COMMON --extractor-args youtube:player_client=tv,web_safari,ios"
+          YTDLP_COMMON="$YTDLP_COMMON -o %(title).50s.%(ext)s"
+
+          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
+            echo "${{ secrets.YT_COOKIES }}" > /tmp/cookies.txt
+            YTDLP_COMMON="$YTDLP_COMMON --cookies /tmp/cookies.txt"
+          fi
+
+          case "$MODE" in
+            youtube)
+              echo "YouTube mode - yt-dlp"
+              if [ "$QUALITY" = "audio" ]; then
+                yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
+              elif [ "$QUALITY" = "1080" ]; then
+                yt-dlp -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              elif [ "$QUALITY" = "4k" ] || [ "$QUALITY" = "2160" ]; then
+                yt-dlp -f "bestvideo[height<=2160]+bestaudio/best[height<=2160]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              elif [ "$QUALITY" = "720" ]; then
+                yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              elif [ "$QUALITY" = "480" ]; then
+                yt-dlp -f "bestvideo[height<=480]+bestaudio/best[height<=480]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              elif [ "$QUALITY" = "360" ]; then
+                yt-dlp -f "bestvideo[height<=360]+bestaudio/best[height<=360]" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              else
+                yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              fi
+              ;;
+            spotify)
+              echo "Spotify mode - spotdl"
+              spotdl "$URL" --output "{title}.{ext}" --format mp3 --bitrate 320k || true
+              ;;
+            apk)
+              echo "APK mode - apkeep"
+              python3 -m pip install apkeep || true
+              APP_ID=$(echo "$URL" | sed -E "s#.*id=([^&]+).*#\1#")
+              if [ -z "$APP_ID" ]; then APP_ID="$URL"; fi
+              apkeep -a "$APP_ID" /tmp/dl || true
+              ;;
+            webarchive)
+              echo "Web archive mode"
+              wget --mirror --convert-links --adjust-extension --page-requisites --no-parent -P /tmp/dl "$URL" || true
+              ;;
+            screenshot)
+              echo "Screenshot mode"
+              python3 -m pip install playwright || true
+              python3 -m playwright install chromium || true
+              python3 - <<PYEOF
+from playwright.sync_api import sync_playwright
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={'width':1440,'height':900})
+        page.goto("$URL", wait_until="networkidle", timeout=60000)
+        page.screenshot(path="/tmp/dl/screenshot.png", full_page=True)
+        browser.close()
+except Exception as e:
+    print("Screenshot failed:", e)
+PYEOF
+              ;;
+            instagram)
+              echo "Instagram mode - gallery-dl"
+              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            soundcloud)
+              echo "SoundCloud mode - yt-dlp audio"
+              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
+              ;;
+            direct)
+              echo "Direct file mode - curl"
+              URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
+              FILENAME=$(basename "$URL_PATH")
+              FILENAME=$(echo "$FILENAME" | tr -cd 'A-Za-z0-9._-')
+              if [ -z "$FILENAME" ] || [ "$FILENAME" = "." ] || [ "$FILENAME" = ".." ]; then
+                FILENAME="download_$(date +%s)"
+              fi
+              curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+                --max-time 900 \
+                -o "$FILENAME" \
+                "$URL" || true
+              ;;
+            *)
+              echo "Fallback mode"
+              yt-dlp $YTDLP_COMMON "$URL" || curl -L -o "download_$(date +%s)" "$URL" || true
+              ;;
+          esac
 
           echo "Scanning for final file..."
           FILE_PATH=$(find /tmp/dl -type f ! -name "*.part" ! -name "*.ytdl" -exec stat -c "%s %n" {} + | sort -n -r | head -n1 | cut -d" " -f2-)
@@ -148,54 +224,57 @@ jobs:
             MIME=$(file --mime-type -b "$FILE_PATH")
             echo "Detected MIME: $MIME"
 
-            if [ "$IS_PLATFORM" = "true" ]; then
-              case "$MIME" in
-                video/mp4|video/x-m4v)   EXT="mp4" ;;
-                video/x-matroska)        EXT="mkv" ;;
-                video/webm)              EXT="webm" ;;
-                video/quicktime)         EXT="mov" ;;
-                video/x-msvideo)         EXT="avi" ;;
-                audio/mpeg)              EXT="mp3" ;;
-                audio/mp4)               EXT="m4a" ;;
-                audio/ogg)               EXT="ogg" ;;
-                audio/flac|audio/x-flac) EXT="flac" ;;
-                audio/wav|audio/x-wav)   EXT="wav" ;;
-                audio/aac)               EXT="aac" ;;
-                image/jpeg)              EXT="jpg" ;;
-                image/png)               EXT="png" ;;
-                image/gif)               EXT="gif" ;;
-                image/webp)              EXT="webp" ;;
-                *)                       EXT="" ;;
-              esac
+            case "$MIME" in
+              video/mp4|video/x-m4v)   EXT="mp4" ;;
+              video/x-matroska)        EXT="mkv" ;;
+              video/webm)              EXT="webm" ;;
+              video/quicktime)         EXT="mov" ;;
+              video/x-msvideo)         EXT="avi" ;;
+              audio/mpeg)              EXT="mp3" ;;
+              audio/mp4)               EXT="m4a" ;;
+              audio/ogg)               EXT="ogg" ;;
+              audio/flac|audio/x-flac) EXT="flac" ;;
+              audio/wav|audio/x-wav)   EXT="wav" ;;
+              audio/aac)               EXT="aac" ;;
+              image/jpeg)              EXT="jpg" ;;
+              image/png)               EXT="png" ;;
+              image/gif)               EXT="gif" ;;
+              image/webp)              EXT="webp" ;;
+              application/vnd.android.package-archive) EXT="apk" ;;
+              application/zip)         EXT="zip" ;;
+              text/html)               EXT="html" ;;
+              *)                       EXT="" ;;
+            esac
 
-              case "$EXT" in
-                sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
-                  echo "status=blocked" >> $GITHUB_OUTPUT
-                  exit 0
-                  ;;
-              esac
+            case "$EXT" in
+              sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
+                echo "status=blocked" >> $GITHUB_OUTPUT
+                exit 0
+                ;;
+            esac
 
-              FILE_DIR=$(dirname "$FILE_PATH")
-              FILE_BASE=$(basename "$FILE_PATH")
-              NAME_NO_EXT="${FILE_BASE%.*}"
-              if [ -n "$EXT" ]; then
-                NEW_NAME="${NAME_NO_EXT}.${EXT}"
-              else
-                NEW_NAME="${FILE_BASE}"
-              fi
-              NEW_PATH="${FILE_DIR}/${NEW_NAME}"
-              if [ "$NEW_PATH" != "$FILE_PATH" ]; then
-                mv "$FILE_PATH" "$NEW_PATH"
-                FILE_PATH="$NEW_PATH"
-              fi
+            FILE_DIR=$(dirname "$FILE_PATH")
+            FILE_BASE=$(basename "$FILE_PATH")
+            NAME_NO_EXT="${FILE_BASE%.*}"
+            if [ -n "$EXT" ]; then
+              NEW_NAME="${NAME_NO_EXT}.${EXT}"
             else
-              ORIG_EXT=$(echo "${FILE_PATH##*.}" | tr "[:upper:]" "[:lower:]")
-              case "$ORIG_EXT" in
-                sh|bash|zsh|csh|ksh|fish|ash|php|php3|php4|php5|php7|php8|phtml|phar|py|pyc|pyo|pl|pm|rb|cgi|lua|jsp|jspx|asp|aspx|war|ear|so|elf)
-                  echo "status=blocked" >> $GITHUB_OUTPUT
-                  exit 0
-                  ;;
-              esac
+              NEW_NAME="${FILE_BASE}"
+            fi
+            NEW_PATH="${FILE_DIR}/${NEW_NAME}"
+            if [ "$NEW_PATH" != "$FILE_PATH" ]; then
+              mv "$FILE_PATH" "$NEW_PATH"
+              FILE_PATH="$NEW_PATH"
+            fi
+
+            if [ "$MAX_PART_MB" -gt 0 ] 2>/dev/null; then
+              FILE_SIZE_MB=$((FILE_SIZE / 1048576))
+              if [ "$FILE_SIZE_MB" -gt "$MAX_PART_MB" ]; then
+                echo "Splitting file (${FILE_SIZE_MB}MB > ${MAX_PART_MB}MB)..."
+                split -b "${MAX_PART_MB}M" "$FILE_PATH" "${FILE_PATH}.part_"
+                rm -f "$FILE_PATH"
+                FILE_PATH=$(ls -1 "${FILE_PATH}.part_"* | head -n1)
+              fi
             fi
 
             echo "Final file: $FILE_PATH (MIME: $MIME)"
@@ -209,13 +288,20 @@ jobs:
 
       - name: Telegram Upload
         if: steps.sec.outputs.safe == 'true'
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          LOG_CHANNEL: ${{ secrets.LOG_CHANNEL }}
         run: |
-          BOT_TOKEN="${{ github.event.inputs.bot_token }}"
           CHAT_ID="${{ github.event.inputs.chat_id }}"
-          LOG_CHANNEL="${{ github.event.inputs.log_channel }}"
           MSG_ID="${{ github.event.inputs.message_id }}"
           STATUS="${{ steps.dl.outputs.status }}"
           MIME="${{ steps.dl.outputs.file_mime }}"
+          MAX_PART_MB="${{ github.event.inputs.max_part_mb }}"
+
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "ERROR: BOT_TOKEN secret not set!"
+            exit 1
+          fi
 
           if [ "$STATUS" = "blocked" ]; then
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" -d "text=Blocked for security reasons."
@@ -240,6 +326,21 @@ jobs:
               image/*) METHOD="sendPhoto";    FIELD="photo" ;;
               *)       METHOD="sendDocument"; FIELD="document" ;;
             esac
+
+            if [ "$MAX_PART_MB" -gt 0 ] 2>/dev/null; then
+              PARTS=$(ls -1 "${FILE_PATH}".part_* 2>/dev/null || true)
+              if [ -n "$PARTS" ]; then
+                for PART in $PARTS; do
+                  PART_NAME=$(basename "$PART")
+                  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+                    -F "chat_id=${CHAT_ID}" \
+                    -F "document=@${PART}" \
+                    -F "caption=Part: ${PART_NAME}"
+                done
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}"
+                exit 0
+              fi
+            fi
 
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" -F "chat_id=${CHAT_ID}" -F "${FIELD}=@${FILE_PATH}" -F "caption=${CAPTION}")
 
