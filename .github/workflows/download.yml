@@ -16,7 +16,7 @@ on:
         description: "Telegram Message ID"
         required: false
       mode:
-        description: "Download mode: auto, youtube, spotify, apk, webarchive, screenshot, instagram, soundcloud, direct"
+        description: "Mode: auto, youtube, instagram, tiktok, twitter, facebook, soundcloud, spotify, pinterest, reddit, twitch, vimeo, dailymotion, linkedin, apk, webarchive, screenshot, direct"
         required: false
         default: "auto"
       max_part_mb:
@@ -69,7 +69,7 @@ jobs:
         if: steps.sec.outputs.safe == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file aria2
+          sudo apt-get install -y -qq ffmpeg curl nodejs npm python3-pip file aria2 wget
           python3 -m pip install -U pip
           python3 -m pip install -U --pre yt-dlp gallery-dl spotdl
           python3 -m pip install -U bgutil-ytdlp-pot-provider || true
@@ -102,12 +102,14 @@ jobs:
           echo "Processing URL: $URL | Mode: $MODE | Quality: $QUALITY"
 
           if [ "$MODE" = "auto" ]; then
-            if echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then
+            if echo "$URL" | grep -qiE "play\.google\.com/store|android\.com/store"; then
+              MODE="apk"
+            elif echo "$URL" | grep -qiE "web\.archive\.org"; then
+              MODE="webarchive"
+            elif echo "$URL" | grep -qiE "youtube\.com|youtu\.be"; then
               MODE="youtube"
             elif echo "$URL" | grep -qiE "spotify\.com"; then
               MODE="spotify"
-            elif echo "$URL" | grep -qiE "play\.google\.com|android\.com/store"; then
-              MODE="apk"
             elif echo "$URL" | grep -qiE "instagram\.com|instagr\.am"; then
               MODE="instagram"
             elif echo "$URL" | grep -qiE "tiktok\.com"; then
@@ -116,6 +118,20 @@ jobs:
               MODE="twitter"
             elif echo "$URL" | grep -qiE "soundcloud\.com"; then
               MODE="soundcloud"
+            elif echo "$URL" | grep -qiE "facebook\.com|fb\.watch|fb\.gg"; then
+              MODE="facebook"
+            elif echo "$URL" | grep -qiE "pinterest\.com|pin\.it"; then
+              MODE="pinterest"
+            elif echo "$URL" | grep -qiE "reddit\.com|redd\.it"; then
+              MODE="reddit"
+            elif echo "$URL" | grep -qiE "twitch\.tv"; then
+              MODE="twitch"
+            elif echo "$URL" | grep -qiE "vimeo\.com"; then
+              MODE="vimeo"
+            elif echo "$URL" | grep -qiE "dailymotion\.com|dai\.ly"; then
+              MODE="dailymotion"
+            elif echo "$URL" | grep -qiE "linkedin\.com"; then
+              MODE="linkedin"
             else
               MODE="direct"
             fi
@@ -134,7 +150,7 @@ jobs:
 
           case "$MODE" in
             youtube)
-              echo "YouTube mode - yt-dlp"
+              echo "YouTube mode"
               if [ "$QUALITY" = "audio" ]; then
                 yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
               elif [ "$QUALITY" = "1080" ]; then
@@ -151,20 +167,87 @@ jobs:
                 yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 $YTDLP_COMMON "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
               fi
               ;;
+            instagram)
+              echo "Instagram mode"
+              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            tiktok)
+              echo "TikTok mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            twitter)
+              echo "Twitter/X mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            facebook)
+              echo "Facebook mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            soundcloud)
+              echo "SoundCloud mode"
+              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
+              ;;
             spotify)
-              echo "Spotify mode - spotdl"
+              echo "Spotify mode"
               spotdl "$URL" --output "{title}.{ext}" --format mp3 --bitrate 320k || true
               ;;
+            pinterest)
+              echo "Pinterest mode"
+              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            reddit)
+              echo "Reddit mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            twitch)
+              echo "Twitch mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            vimeo)
+              echo "Vimeo mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            dailymotion)
+              echo "Dailymotion mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
+            linkedin)
+              echo "LinkedIn mode"
+              yt-dlp $YTDLP_COMMON "$URL" || true
+              ;;
             apk)
-              echo "APK mode - apkeep"
+              echo "Google Play APK mode"
               python3 -m pip install apkeep || true
-              APP_ID=$(echo "$URL" | sed -E "s#.*id=([^&]+).*#\1#")
-              if [ -z "$APP_ID" ]; then APP_ID="$URL"; fi
+              APP_ID=$(echo "$URL" | sed -E "s#.*[?&]id=([^&]+).*#\1#")
+              if [ -z "$APP_ID" ] || [ "$APP_ID" = "$URL" ]; then
+                APP_ID="$URL"
+              fi
+              echo "Package ID: $APP_ID"
               apkeep -a "$APP_ID" /tmp/dl || true
               ;;
             webarchive)
-              echo "Web archive mode"
-              wget --mirror --convert-links --adjust-extension --page-requisites --no-parent -P /tmp/dl "$URL" || true
+              echo "Web Archive mode"
+              wget --mirror --convert-links --adjust-extension --page-requisites --no-parent --no-check-certificate \
+                   --user-agent="Mozilla/5.0" -P /tmp/dl "$URL" || true
+              # fallback: save as mhtml via playwright
+              if [ -z "$(find /tmp/dl -type f -name '*.html' | head -n1)" ]; then
+                python3 -m pip install playwright || true
+                python3 -m playwright install chromium || true
+                python3 - <<PYEOF
+from playwright.sync_api import sync_playwright
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.goto("$URL", wait_until="networkidle", timeout=60000)
+        html = page.content()
+        with open("/tmp/dl/archive.html","w",encoding="utf-8") as f:
+            f.write(html)
+        browser.close()
+except Exception as e:
+    print("webarchive fallback failed:", e)
+PYEOF
+              fi
               ;;
             screenshot)
               echo "Screenshot mode"
@@ -176,23 +259,15 @@ try:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={'width':1440,'height':900})
-        page.goto("$URL", wait_until="networkidle", timeout=60000)
+        page.goto("$URL", wait_until="networkidle", timeout=90000)
         page.screenshot(path="/tmp/dl/screenshot.png", full_page=True)
         browser.close()
 except Exception as e:
     print("Screenshot failed:", e)
 PYEOF
               ;;
-            instagram)
-              echo "Instagram mode - gallery-dl"
-              gallery-dl -D /tmp/dl "$URL" || yt-dlp $YTDLP_COMMON "$URL" || true
-              ;;
-            soundcloud)
-              echo "SoundCloud mode - yt-dlp audio"
-              yt-dlp -x --audio-format mp3 --audio-quality 0 $YTDLP_COMMON "$URL" || true
-              ;;
             direct)
-              echo "Direct file mode - curl"
+              echo "Direct file mode"
               URL_PATH=$(echo "$URL" | sed 's/[?#].*//')
               FILENAME=$(basename "$URL_PATH")
               FILENAME=$(echo "$FILENAME" | tr -cd 'A-Za-z0-9._-')
