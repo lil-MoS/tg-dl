@@ -1,4 +1,4 @@
-name: Telegram Downloader Core
+name: Bale Downloader Core
 
 on:
   workflow_dispatch:
@@ -10,16 +10,16 @@ on:
         description: "Quality"
         required: true
       chat_id:
-        description: "Telegram Chat ID"
+        description: "Bale Chat ID"
         required: true
       bot_token:
-        description: "Bot Token"
+        description: "Bale Bot Token"
         required: true
       log_channel:
         description: "Log Channel ID"
         required: false
       message_id:
-        description: "Telegram Message ID"
+        description: "Bale Message ID"
         required: false
 
 jobs:
@@ -547,7 +547,7 @@ jobs:
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
-      - name: Telegram Upload
+      - name: Bale Upload
         if: steps.sec.outputs.safe == 'true'
         run: |
           BOT_TOKEN="${{ github.event.inputs.bot_token }}"
@@ -557,8 +557,11 @@ jobs:
           STATUS="${{ steps.dl.outputs.status }}"
           MIME="${{ steps.dl.outputs.file_mime }}"
 
+          # آدرس API بله
+          BALE_API="https://tapi.bale.ai/bot${BOT_TOKEN}"
+
           if [ "$STATUS" = "blocked" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+            curl -s -X POST "${BALE_API}/editMessageText" \
               -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
               -d "text=🚫 This file type is blocked for security reasons." \
               -d "parse_mode=HTML"
@@ -570,17 +573,17 @@ jobs:
             FILE_NAME="${{ steps.dl.outputs.file_name }}"
             FILE_SIZE=$(stat -c%s "$FILE_PATH")
 
-            echo "Uploading: $FILE_NAME ($FILE_SIZE bytes, $MIME)"
+            echo "Uploading to Bale: $FILE_NAME ($FILE_SIZE bytes, $MIME)"
 
             if [ $FILE_SIZE -gt 2097152000 ]; then
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+              curl -s -X POST "${BALE_API}/editMessageText" \
                 -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
-                -d "text=❌ File exceeds 2GB Telegram limit." \
+                -d "text=❌ File exceeds 2GB Bale limit." \
                 -d "parse_mode=HTML"
               exit 0
             fi
 
-            CAPTION="✅ <b>${FILE_NAME}</b> | @YoutubeDLLBot"
+            CAPTION="✅  ${FILE_NAME}  | @dlprobot"
 
             case "$MIME" in
               video/*)
@@ -613,7 +616,7 @@ jobs:
             echo "Using method: $METHOD (field: $FIELD)"
 
             RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 300 \
-              -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
+              -X POST "${BALE_API}/${METHOD}" \
               -F "chat_id=${CHAT_ID}" \
               -F "${FIELD}=@${FILE_PATH}" \
               -F "caption=${CAPTION}" \
@@ -627,13 +630,13 @@ jobs:
 
             if echo "$BODY" | grep -q "ok":true; then
               echo "Upload successful!"
-              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
+              curl -s -X POST "${BALE_API}/deleteMessage" \
                 -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" || true
 
               if [ -n "$LOG_CHANNEL" ] && [ "$LOG_CHANNEL" != "" ]; then
                 echo "Sending to log channel..."
                 curl -s --max-time 300 \
-                  -X POST "https://api.telegram.org/bot${BOT_TOKEN}/${METHOD}" \
+                  -X POST "${BALE_API}/${METHOD}" \
                   -F "chat_id=${LOG_CHANNEL}" \
                   -F "${FIELD}=@${FILE_PATH}" \
                   -F "caption=📋 Log | User: ${CHAT_ID} | File: ${FILE_NAME}" \
@@ -643,7 +646,7 @@ jobs:
             else
               echo "Primary upload failed, trying sendDocument fallback..."
               RESPONSE2=$(curl -s --max-time 300 \
-                -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+                -X POST "${BALE_API}/sendDocument" \
                 -F "chat_id=${CHAT_ID}" \
                 -F "document=@${FILE_PATH}" \
                 -F "caption=${CAPTION}" \
@@ -651,19 +654,19 @@ jobs:
 
               if echo "$RESPONSE2" | grep -q "ok":true; then
                 echo "Fallback upload successful!"
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
+                curl -s -X POST "${BALE_API}/deleteMessage" \
                   -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" || true
               else
                 echo "All upload attempts failed"
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+                curl -s -X POST "${BALE_API}/editMessageText" \
                   -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
-                  -d "text=❌ Upload to Telegram failed. The file might be too large or in an unsupported format." \
+                  -d "text=❌ Upload to Bale failed. The file might be too large or in an unsupported format." \
                   -d "parse_mode=HTML"
               fi
             fi
           else
             echo "Download failed, notifying user..."
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/editMessageText" \
+            curl -s -X POST "${BALE_API}/editMessageText" \
               -d "chat_id=${CHAT_ID}" -d "message_id=${MSG_ID}" \
               -d "text=❌ Download failed. The link may be private, expired, or geo-restricted." \
               -d "parse_mode=HTML"
